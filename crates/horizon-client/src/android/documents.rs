@@ -15,7 +15,7 @@ use std::{
         Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 struct Request {
@@ -80,6 +80,13 @@ fn notice(text: impl Into<String>, changed: bool) {
         changed,
         kind: None,
     });
+}
+fn remove_path(path: &std::path::Path) {
+    if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir()) {
+        let _ = std::fs::remove_dir_all(path);
+    } else {
+        let _ = std::fs::remove_file(path);
+    }
 }
 fn imported(text: impl Into<String>, kind: Kind) {
     let text = text.into();
@@ -255,32 +262,63 @@ fn stage(request: Request, mut input: std::fs::File, name: String) -> Result<()>
         if CANCEL.load(Ordering::Relaxed) {
             return Err("Import cancelled".into());
         }
-        let target = dir.join(name);
-        if target.exists() {
+        let classic_shader = request.kind == Kind::Shaders
+            && name.to_ascii_lowercase().ends_with(".zip")
+            && !native_shader;
+        let (target, installed_path) = if classic_shader {
+            let stem = PathBuf::from(&name)
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .ok_or("Shader ZIP has an invalid filename")?
+                .to_owned();
+            if !content_files::plain_name(&stem) {
+                return Err("Shader ZIP has an invalid folder name".into());
+            }
+            let extracted = dir.join(format!(".import-{stamp}"));
+            content_files::extract_shader_archive(&staged, &extracted, || {
+                CANCEL.load(Ordering::Relaxed)
+            })?;
+            let _ = std::fs::remove_file(&staged);
+            (dir.join(stem), extracted)
+        } else {
+            (dir.join(name), staged.clone())
+        };
+        if std::fs::symlink_metadata(&target).is_ok() {
             STATE.lock().unwrap_or_else(|e| e.into_inner()).conflict = Some(Conflict {
                 kind: request.kind,
-                staged: staged.clone(),
+                staged: installed_path,
                 target,
             });
             notice(
-                "File already exists: choose Keep both, Replace or Cancel",
+                "Pack already exists: choose Keep both, Replace or Cancel",
                 false,
             );
         } else {
-            std::fs::rename(&staged, &target)?;
+            if let Err(error) = std::fs::rename(&installed_path, &target) {
+                remove_path(&installed_path);
+                return Err(error.into());
+            }
             imported(
-                format!(
-                    "Imported {} into {}. Enable it in game settings.",
-                    target.file_name().unwrap_or_default().to_string_lossy(),
-                    request.kind.label()
-                ),
+                if classic_shader {
+                    format!(
+                        "Extracted {} into shaderpacks/{}. Enable it in game settings.",
+                        name,
+                        target.file_name().unwrap_or_default().to_string_lossy()
+                    )
+                } else {
+                    format!(
+                        "Imported {} into {}. Enable it in game settings.",
+                        target.file_name().unwrap_or_default().to_string_lossy(),
+                        request.kind.label()
+                    )
+                },
                 request.kind,
             );
         }
         Ok(())
     })();
     if result.is_err() {
-        let _ = std::fs::remove_file(staged);
+        remove_path(&staged);
     }
     result
 }
@@ -294,16 +332,37 @@ pub fn resolve(choice: Choice) {
         return;
     };
     if matches!(choice, Choice::Cancel) {
-        let _ = std::fs::remove_file(c.staged);
+        remove_path(&c.staged);
         notice("Import cancelled", false);
         return;
     }
     let result = (|| -> Result<()> {
-        if matches!(choice, Choice::Replace)
-            && std::fs::symlink_metadata(&c.target)
-                .is_ok_and(|m| !m.is_file() || m.file_type().is_symlink())
-        {
-            return Err("Cannot replace a folder or symbolic link".into());
+        if matches!(choice, Choice::Replace) {
+            let staged_dir = std::fs::symlink_metadata(&c.staged)
+                .is_ok_and(|meta| meta.is_dir() && !meta.file_type().is_symlink());
+            let target_meta = std::fs::symlink_metadata(&c.target)
+                .map_err(|_| "The existing pack is no longer available")?;
+            if target_meta.file_type().is_symlink()
+                || target_meta.is_dir() != staged_dir
+                || (!staged_dir && !target_meta.is_file())
+            {
+                return Err("Cannot replace a different file type or symbolic link".into());
+            }
+            if staged_dir {
+                let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+                let backup = c
+                    .target
+                    .parent()
+                    .ok_or("Invalid shader folder")?
+                    .join(format!(".replace-{stamp}"));
+                std::fs::rename(&c.target, &backup)?;
+                if let Err(error) = std::fs::rename(&c.staged, &c.target) {
+                    let _ = std::fs::rename(&backup, &c.target);
+                    return Err(error.into());
+                }
+                remove_path(&backup);
+                return Ok(());
+            }
         }
         if matches!(choice, Choice::KeepBoth) {
             if c.kind == Kind::Mods {
@@ -332,8 +391,12 @@ pub fn resolve(choice: Choice) {
                 .ok_or("Invalid content folder")?
                 .to_owned();
             for i in 1..=10000 {
-                let candidate = dir.join(format!("{stem} ({i}).{ext}"));
-                if !candidate.exists() {
+                let candidate = dir.join(if ext.is_empty() {
+                    format!("{stem} ({i})")
+                } else {
+                    format!("{stem} ({i}).{ext}")
+                });
+                if std::fs::symlink_metadata(&candidate).is_err() {
                     c.target = candidate;
                     break;
                 }
@@ -351,7 +414,7 @@ pub fn resolve(choice: Choice) {
             c.kind,
         ),
         Err(e) => {
-            let _ = std::fs::remove_file(c.staged);
+            remove_path(&c.staged);
             notice(format!("Import failed: {e}"), false);
         }
     }
@@ -392,6 +455,7 @@ pub fn draw(batch: &mut HudBatch, atlas: &HudAtlas) {
 }
 /// Launcher overlays must use its bundled font, including before game fonts exist.
 pub fn draw_ui(ui: &mut Ui<'_>) {
+    static ANIMATION_START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
     let mut s = STATE.lock().unwrap_or_else(|e| e.into_inner());
     s.hits.clear();
     if s.conflict.is_none() && !s.working {
@@ -447,6 +511,29 @@ pub fn draw_ui(ui: &mut Ui<'_>) {
     );
     let name = ui.fit_text(Face::Regular, 16.0, &name, w - 24.0);
     ui.text(Face::Regular, 16.0, x + 12.0, y + 46.0, color::MUTED, &name);
+    if s.conflict.is_none() {
+        let track_x = x + 12.0;
+        let track_width = w - 24.0;
+        let track_y = y + 76.0;
+        ui.rounded(track_x, track_y, track_width, 3.0, 1.5, color::BORDER);
+        let elapsed = ANIMATION_START.get_or_init(Instant::now).elapsed().as_secs_f32();
+        let shuttle_width = (track_width * 0.28).clamp(22.0, 72.0);
+        let shuttle_x = track_x
+            + (elapsed * 150.0).rem_euclid(track_width + shuttle_width)
+            - shuttle_width;
+        let shuttle_left = shuttle_x.max(track_x);
+        let shuttle_right = (shuttle_x + shuttle_width).min(track_x + track_width);
+        if shuttle_right > shuttle_left {
+            ui.rounded(
+                shuttle_left,
+                track_y,
+                shuttle_right - shuttle_left,
+                3.0,
+                1.5,
+                color::ACCENT,
+            );
+        }
+    }
     let width = (w - 24.0) / choices.len() as f32;
     for (i, (label, choice)) in choices.into_iter().enumerate() {
         let rect = if vertical {

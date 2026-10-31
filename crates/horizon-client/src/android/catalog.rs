@@ -262,11 +262,18 @@ impl Catalog {
                 continue;
             }
             for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-                if !entry.file_type().is_ok_and(|t| t.is_file()) {
+                let Ok(file_type) = entry.file_type() else {
                     continue;
-                }
+                };
                 let name = entry.file_name().to_string_lossy().into_owned();
-                if !horizon_client::content_files::plain_name(&name) || !kind.accepts(&name) {
+                let path = entry.path();
+                let shader_folder = kind == horizon_client::content_files::Kind::Shaders
+                    && file_type.is_dir()
+                    && (path.join("shaders").is_dir()
+                        || horizon_shader_api::package::is_pack(&path));
+                if !horizon_client::content_files::plain_name(&name)
+                    || !(file_type.is_file() && kind.accepts(&name) || shader_folder)
+                {
                     continue;
                 }
                 let enabled = match kind {
@@ -293,16 +300,20 @@ impl Catalog {
     pub fn busy(&self) -> bool {
         self.worker.is_some()
     }
-    pub fn download_label(&self, project: &Project) -> Option<String> {
-        if self
-            .downloading
+    pub fn download_progress(&self, project: &Project) -> Option<f32> {
+        self.downloading
             .as_ref()
-            .is_some_and(|(source, id)| *source == project.source && *id == project.id)
-        {
-            return Some(format!(
-                "{:.0}%",
-                *self.progress.lock().unwrap_or_else(|e| e.into_inner()) * 100.0
-            ));
+            .filter(|(source, id)| *source == project.source && *id == project.id)
+            .map(|_| {
+                self.progress
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clamp(0.0, 1.0)
+            })
+    }
+    pub fn download_label(&self, project: &Project) -> Option<String> {
+        if let Some(progress) = self.download_progress(project) {
+            return Some(format!("{:.0}%", progress * 100.0));
         }
         if self
             .downloaded
@@ -627,12 +638,22 @@ impl Catalog {
             }
             let target = dir.join(&item.file);
             let meta = std::fs::symlink_metadata(&target).map_err(|e| e.to_string())?;
-            if !meta.is_file() || meta.file_type().is_symlink() {
-                return Err(
-                    "Only an explicitly selected regular add-on file can be removed".into(),
-                );
+            if meta.file_type().is_symlink() {
+                return Err("Cannot remove a symbolic link".into());
             }
-            std::fs::remove_file(target).map_err(|e| e.to_string())?;
+            if meta.is_dir() {
+                let shader_folder = item.kind == horizon_client::content_files::Kind::Shaders
+                    && (target.join("shaders").is_dir()
+                        || horizon_shader_api::package::is_pack(&target));
+                if !shader_folder {
+                    return Err("Only a recognized shader folder can be removed".into());
+                }
+                std::fs::remove_dir_all(&target).map_err(|e| e.to_string())?;
+            } else if meta.is_file() {
+                std::fs::remove_file(&target).map_err(|e| e.to_string())?;
+            } else {
+                return Err("Only an explicitly selected add-on can be removed".into());
+            }
             let relative = format!("{}/{}", item.kind.folder(), item.file);
             let mut installed = Installed::load(&game);
             installed.entries.retain(|e| e.file != relative);

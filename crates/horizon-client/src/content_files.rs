@@ -1,7 +1,8 @@
-//! Local add-on files. Imports remain archives: no untrusted path is extracted.
+//! Local add-on files. Archive paths and expansion limits are checked before pack installation.
 use std::{
     collections::HashSet,
-    io::{self, Read},
+    fs::{self, File, OpenOptions},
+    io::{self, Read, Write},
     path::{Component, Path},
 };
 
@@ -38,6 +39,19 @@ impl Kind {
 }
 pub const MAX_INPUT: u64 = 256 << 20;
 const MAX_EXPANDED: u64 = 512 << 20;
+fn shader_source_file(path: &str) -> bool {
+    let path = path.to_ascii_lowercase();
+    [".vsh", ".fsh", ".glsl", ".csh", ".gsh", ".tcs", ".tes"]
+        .iter()
+        .any(|extension| path.ends_with(extension))
+}
+fn shader_pack_prefix(path: &str) -> Option<&str> {
+    if path.starts_with("shaders/") {
+        Some("")
+    } else {
+        path.find("/shaders/").map(|index| &path[..=index])
+    }
+}
 pub fn plain_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 180
@@ -92,7 +106,10 @@ pub fn validate(
             || raw.chars().any(char::is_control)
             || raw.contains(['\\', ':', '\0'])
             || raw.starts_with('/')
-            || raw.split('/').any(|p| p == ".." || p == ".")
+            || raw
+                .trim_end_matches('/')
+                .split('/')
+                .any(|part| part.is_empty() || part == ".." || part == ".")
             || !names.insert(raw.clone())
             || entry.unix_mode().is_some_and(|m| m & 0o170000 == 0o120000)
         {
@@ -106,12 +123,9 @@ pub fn validate(
         }
         pack |= raw == "pack.mcmeta";
         native_shader |= raw == "horizon-shaders.toml";
-        shader |= native_shader
-            || raw.starts_with("shaders/")
-                && !entry.is_dir()
-                && ["vsh", "fsh", "glsl", "csh", "gsh", "tcs", "tes"]
-                    .iter()
-                    .any(|ext| raw.ends_with(&format!(".{ext}")));
+        shader |= !entry.is_dir()
+            && shader_source_file(&raw)
+            && shader_pack_prefix(&raw).is_some();
         manifest |= raw == "horizon-mod.toml";
         wasm |= raw == "mod.wasm";
         let expected = entry.size();
@@ -153,12 +167,126 @@ pub fn validate(
         Kind::Mods => manifest && wasm,
     } {
         return Err(format!(
-            "Archive is not a {} package (required files must be at the ZIP root)",
+            "Archive is not a valid {} package or is missing its required files",
             kind.label()
         )
         .into());
     }
     Ok(kind == Kind::Shaders && native_shader)
+}
+pub fn extract_shader_archive(
+    path: &Path,
+    destination: &Path,
+    cancelled: impl Fn() -> bool,
+) -> crate::Result<()> {
+    let result = (|| -> crate::Result<()> {
+        let file = File::open(path)?;
+        let mut zip = zip::ZipArchive::new(file)?;
+        if zip.len() > 32768 || destination.exists() {
+            return Err("Shader archive or destination is invalid".into());
+        }
+        let mut prefix: Option<String> = None;
+        for i in 0..zip.len() {
+            if cancelled() {
+                return Err("Import cancelled".into());
+            }
+            let entry = zip.by_index(i)?;
+            let raw = entry.name();
+            if !entry.is_dir()
+                && shader_source_file(raw)
+                && let Some(root) = shader_pack_prefix(raw)
+            {
+                let candidate = root.to_owned();
+                if prefix.as_ref().is_some_and(|old| old != &candidate) {
+                    return Err("Shader ZIP contains more than one pack folder".into());
+                }
+                prefix = Some(candidate);
+            }
+        }
+        let prefix = prefix
+            .as_deref()
+            .ok_or("Shader ZIP has no shaders folder")?;
+        fs::create_dir(destination)?;
+        let mut total = 0u64;
+        for i in 0..zip.len() {
+            if cancelled() {
+                return Err("Import cancelled".into());
+            }
+            let mut entry = zip.by_index(i)?;
+            let raw = entry.name().to_owned();
+            let relative = if prefix.is_empty() {
+                raw.as_str()
+            } else if let Some(relative) = raw.strip_prefix(prefix) {
+                relative
+            } else {
+                continue;
+            };
+            let relative = relative.trim_end_matches('/');
+            if relative.is_empty() {
+                continue;
+            }
+            if relative.len() > 1024
+                || relative.contains(['\\', ':', '\0'])
+                || relative.starts_with('/')
+                || relative
+                    .split('/')
+                    .any(|part| part.is_empty() || part == "." || part == "..")
+                || entry.unix_mode().is_some_and(|mode| mode & 0o170000 == 0o120000)
+            {
+                return Err("Shader archive contains an unsafe path".into());
+            }
+            let relative_path = Path::new(relative);
+            if relative_path
+                .components()
+                .any(|part| !matches!(part, Component::Normal(_)))
+            {
+                return Err("Shader archive contains an unsafe path".into());
+            }
+            let target = destination.join(relative_path);
+            if entry.is_dir() || relative.ends_with('/') {
+                fs::create_dir_all(&target)?;
+                continue;
+            }
+            total = total
+                .checked_add(entry.size())
+                .ok_or("Shader archive size overflow")?;
+            if total > MAX_EXPANDED {
+                return Err("Expanded shader archive exceeds 512 MiB".into());
+            }
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let mut output = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&target)?;
+            let expected = entry.size();
+            let mut actual = 0u64;
+            let mut buffer = [0u8; 65536];
+            loop {
+                if cancelled() {
+                    return Err("Import cancelled".into());
+                }
+                let count = entry.read(&mut buffer)?;
+                if count == 0 {
+                    break;
+                }
+                actual += count as u64;
+                if actual > expected || actual > MAX_EXPANDED {
+                    return Err("Shader archive size mismatch".into());
+                }
+                output.write_all(&buffer[..count])?;
+            }
+            if actual != expected {
+                return Err("Incomplete shader archive entry".into());
+            }
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_dir_all(destination);
+    }
+    result
 }
 pub fn copy_bounded(
     input: &mut impl Read,
@@ -254,6 +382,38 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
+    fn extracts_classic_shader_zip_with_one_wrapper_directory() {
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-shader-extract-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let archive_path = dir.join("Example.zip");
+        let bytes = archive(&[
+            ("Example/shaders/final.fsh", b"void main() {}"),
+            ("Example/shaders/gbuffers_terrain.vsh", b"void main() {}"),
+            ("Example/shaders.properties", b"oldLighting=true"),
+        ]);
+        std::fs::write(&archive_path, bytes).unwrap();
+        assert!(!validate(&archive_path, Kind::Shaders, "Example.zip", || false).unwrap());
+        let destination = dir.join("staged-pack");
+        extract_shader_archive(&archive_path, &destination, || false).unwrap();
+        assert_eq!(
+            std::fs::read(destination.join("shaders/final.fsh")).unwrap(),
+            b"void main() {}"
+        );
+        assert_eq!(
+            std::fs::read(destination.join("shaders.properties")).unwrap(),
+            b"oldLighting=true"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn streamed_copy_is_bounded_and_cancellable() {
         let mut out = Vec::new();
         assert_eq!(
@@ -263,5 +423,69 @@ mod tests {
         assert_eq!(out, b"test");
         assert!(copy_bounded(&mut io::repeat(0), &mut io::sink(), |_| true).is_err());
         assert!(copy_bounded(&mut Cursor::new(b"test"), &mut io::sink(), |_| false).is_err());
+    }
+    #[test]
+    fn classic_shader_zips_extract_from_root_or_nested_wrapping_folders() {
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-shader-import-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shader.zip");
+        let target = dir.join("shader");
+        std::fs::write(
+            &path,
+            archive(&[
+                ("Download/Pack/shaders/final.fsh", b"final"),
+                ("Download/Pack/shaders/final.vsh", b"vertex"),
+                ("Download/Pack/lang/en_us.lang", b"name"),
+                ("__MACOSX/._Pack", b"metadata"),
+            ]),
+        )
+        .unwrap();
+        assert!(!validate(&path, Kind::Shaders, "shader.zip", || false).unwrap());
+        extract_shader_archive(&path, &target, || false).unwrap();
+        assert_eq!(
+            std::fs::read(target.join("shaders/final.fsh")).unwrap(),
+            b"final"
+        );
+        assert_eq!(
+            std::fs::read(target.join("lang/en_us.lang")).unwrap(),
+            b"name"
+        );
+        std::fs::remove_dir_all(&target).unwrap();
+        std::fs::write(
+            &path,
+            archive(&[("shaders/final.fsh", b"final")]),
+        )
+        .unwrap();
+        extract_shader_archive(&path, &target, || false).unwrap();
+        assert_eq!(
+            std::fs::read(target.join("shaders/final.fsh")).unwrap(),
+            b"final"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+    #[test]
+    fn shader_extraction_cleans_partial_files_when_cancelled() {
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-shader-cancel-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shader.zip");
+        let target = dir.join("shader");
+        std::fs::write(&path, archive(&[("shaders/final.fsh", b"final")])).unwrap();
+        assert!(extract_shader_archive(&path, &target, || true).is_err());
+        assert!(!target.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

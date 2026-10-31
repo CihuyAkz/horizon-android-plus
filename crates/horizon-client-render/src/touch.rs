@@ -382,10 +382,10 @@ impl TouchControls {
                         a,
                         "ui/joystick_knob",
                         [
-                            x + size * (0.33 + state.left[0] * 0.25),
-                            y + size * (0.33 - state.left[1] * 0.25),
-                            size * 0.34,
-                            size * 0.34,
+                            x + size * (0.29 + state.left[0] * 0.23),
+                            y + size * (0.29 - state.left[1] * 0.23),
+                            size * 0.42,
+                            size * 0.42,
                         ],
                         color,
                     );
