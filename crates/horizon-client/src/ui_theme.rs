@@ -62,7 +62,7 @@ pub mod color {
     pub const MUTED: u32 = hex(P.ink_soft, 255);
     pub const ACCENT: u32 = hex(P.accent, 255);
     pub const ON_ACCENT: u32 = hex(P.on_accent, 255);
-    pub fn with_alpha(c: u32, a: f32) -> u32 {
+    pub(crate) fn with_alpha(c: u32, a: f32) -> u32 {
         let base = (c >> 24) as f32;
         (c & 0x00ff_ffff) | ((base * a.clamp(0.0, 1.0)).round() as u32) << 24
     }
@@ -293,8 +293,19 @@ pub struct Ui<'a> {
     /// Physical pixels per dp.
     pub density: f32,
     scale: f32,
+    origin: (f32, f32),
 }
 impl<'a> Ui<'a> {
+    pub fn set_origin(&mut self, x: f32, y: f32) {
+        self.origin = (x, y);
+    }
+    pub fn screen_rect(&self, rect: [f32; 4]) -> [f32; 4] {
+        [rect[0] + self.origin.0, rect[1] + self.origin.1, rect[2], rect[3]]
+    }
+    pub fn local_rect(&self, rect: [f32; 4]) -> [f32; 4] {
+        [rect[0] - self.origin.0, rect[1] - self.origin.1, rect[2], rect[3]]
+    }
+
     /// `cursor` is in GUI pixels, like every screen's input.
     pub fn new(atlas: &'a HudAtlas, batch: &'a mut HudBatch, cursor: (f32, f32)) -> Self {
         let scale = batch.scale;
@@ -307,6 +318,7 @@ impl<'a> Ui<'a> {
             cursor: (cursor.0 * scale / density, cursor.1 * scale / density),
             density,
             scale,
+            origin: (0.0, 0.0),
             batch,
         }
     }
@@ -357,10 +369,10 @@ impl<'a> Ui<'a> {
 
     // ---- geometry, snapped to physical pixels ----
     fn px_x(&self, v: f32) -> f32 {
-        (v * self.density).round()
+        ((v + self.origin.0) * self.density).round()
     }
     fn px_y(&self, v: f32) -> f32 {
-        (v * self.density).round()
+        ((v + self.origin.1) * self.density).round()
     }
     fn raw_fill(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, color: u32) {
         if x1 > x0 && y1 > y0 {

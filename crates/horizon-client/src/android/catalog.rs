@@ -9,6 +9,20 @@ pub fn source_only_mod(project: &Project) -> bool {
     project.source == browser::SourceId::Horizon
         && project.loaders.iter().any(|loader| loader == "hnmod")
 }
+fn source_for(page: Page) -> browser::SourceId {
+    match page {
+        Page::Mods => browser::SourceId::Horizon,
+        Page::Packs | Page::Shaders => browser::SourceId::Modrinth,
+        _ => browser::SourceId::Horizon,
+    }
+}
+pub fn provider_supported(project: &Project) -> bool {
+    match project.kind {
+        Kind::Mod => project.source == browser::SourceId::Horizon,
+        Kind::ResourcePack | Kind::Shader => project.source == browser::SourceId::Modrinth,
+        _ => false,
+    }
+}
 
 /// Temporary dev registration published as Minecraft Nintendo Switch by PrismarineJS.
 /// Account tokens and client secrets are never bundled.
@@ -103,6 +117,8 @@ impl Config {
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
         let mut config: Self = serde_json::from_value(value.clone()).unwrap_or_default();
+        config.shader_source = crate::shader_catalog::Origin::Modrinth;
+        config.mod_source = crate::shader_catalog::Origin::Horizon;
         if cfg!(target_pointer_width = "32") && value.get("renderer").is_none() {
             config.renderer = RendererMode::OpenGl;
         }
@@ -405,23 +421,8 @@ impl Catalog {
         if !self.page.is_catalog() {
             return;
         }
-        if self.page == Page::Mods && self.query.trim().starts_with("https://") {
-            self.searches.cancel_interest();
-            if refresh {
-                self.import_native(home);
-            } else {
-                self.results.clear();
-                self.status = "Press Import .hmod to download this HTTPS link".into();
-            }
-            return;
-        }
         self.scroll = 0.0;
-        let source = match self.page {
-            Page::Packs => browser::SourceId::Modrinth,
-            Page::Shaders => self.config.shader_source.source(),
-            Page::Mods => self.config.mod_source.source(),
-            _ => browser::SourceId::Horizon,
-        };
+        let source = source_for(self.page);
         let key = (self.page, source, self.query.trim().to_owned(), self.offset);
         if let Some(items) = self.searches.request(key, refresh) {
             self.show_results(items);
@@ -432,31 +433,12 @@ impl Catalog {
         self.start_search();
     }
     fn show_results(&mut self, items: Vec<Project>) {
-        self.status = if self.page == Page::Shaders
-            && items.is_empty()
-            && self.config.shader_source == crate::shader_catalog::Origin::Horizon
-        {
-            "No Horizon shader packs match this search. Try another query or import a .hshader."
-                .into()
-        } else if self.page == Page::Mods
-            && self.config.mod_source == crate::shader_catalog::Origin::Modrinth
-        {
-            format!(
-                "{} Java mods - browsing only; this Rust client cannot run Java loaders",
-                items.len()
-            )
-        } else if self.page == Page::Mods {
-            let native = items.iter().filter(|p| source_only_mod(p)).count();
-            format!(
-                "{} .hmod / {} source-only .hnmod (not supported yet)",
-                items.len() - native,
-                native
-            )
+        self.status = if self.page == Page::Mods {
+            format!("{} Horizon mod results", items.len())
+        } else if self.page == Page::Shaders {
+            format!("{} Modrinth shader results", items.len())
         } else {
-            format!(
-                "{} results - select Install to check compatibility",
-                items.len()
-            )
+            format!("{} Modrinth resource pack results", items.len())
         };
         self.results = items;
     }
@@ -478,44 +460,29 @@ impl Catalog {
             let mut query = Query::new(&text, kind);
             query.offset = offset;
             query.limit = 12;
-            let result = if page == Page::Shaders && source == browser::SourceId::Modrinth {
-                query.everything = true;
-                browser::modrinth::search_shader_packs(&query)
-            } else if page == Page::Packs
-                || (page == Page::Mods && source == browser::SourceId::Modrinth)
-            {
-                query.everything = true;
-                browser::modrinth::Modrinth.search(&query)
-            } else {
-                browser::horizon::Registry.search(&query)
+            let result = match page {
+                Page::Shaders => {
+                    query.everything = true;
+                    browser::modrinth::search_shader_packs(&query)
+                }
+                Page::Packs => {
+                    query.everything = true;
+                    browser::modrinth::Modrinth.search(&query)
+                }
+                Page::Mods => browser::horizon::Registry.search(&query),
+                _ => Ok(Vec::new()),
             };
             let _ = tx.send(result);
-        });
-    }
-    pub fn import_native(&mut self, home: &Path) {
-        let url = self.query.trim().to_owned();
-        let game = self.config.game_home(home);
-        self.job("Downloading sandboxed .hmod over HTTPS...",move||{
-            use std::io::Read;
-            let mut bytes=Vec::new();
-            ureq::AgentBuilder::new().https_only(true).timeout_connect(std::time::Duration::from_secs(20)).timeout_read(std::time::Duration::from_secs(90)).build().get(&url).call().map_err(|e|e.to_string())?.into_reader().take(32*1024*1024+1).read_to_end(&mut bytes).map_err(|e|e.to_string())?;
-            if bytes.len()>32*1024*1024 {return Err("Horizon mod exceeds 32 MiB".into());}
-            let dir=game.join("horizon-mods");std::fs::create_dir_all(&dir).map_err(|e|e.to_string())?;
-            let stage=dir.join("import.partial");std::fs::write(&stage,bytes).map_err(|e|e.to_string())?;
-            let result=(||{
-                let package=horizon_mods::Package::read(&stage)?;
-                let destination=dir.join(format!("{}.hmod",package.manifest.id));
-                if destination.exists(){std::fs::copy(&destination,destination.with_extension("hmod.previous")).map_err(|e|e.to_string())?;}
-                std::fs::rename(&stage,destination).map_err(|e|e.to_string())?;
-                Ok(Reply::Done(format!("Installed {}. Enable it in Installed after reviewing its capabilities in game Mods.",package.manifest.name), horizon_client::content_files::Kind::Mods))
-            })();
-            let _=std::fs::remove_file(stage);result
         });
     }
     pub fn install(&mut self, home: &Path, index: usize) {
         let Some(project) = self.results.get(index).cloned() else {
             return;
         };
+        if !provider_supported(&project) {
+            self.status = "This content source is not supported for this category".into();
+            return;
+        }
         if source_only_mod(&project) {
             self.status = "This .hnmod needs a separately compiled client. Android support is planned; sandboxed .hmod mods can be installed now.".into();
             return;
@@ -524,16 +491,8 @@ impl Catalog {
             return;
         }
         let game = self.config.game_home(home);
-        if project.kind != Kind::ResourcePack
-            && !(project.kind == Kind::Shader
-                && matches!(
-                    project.source,
-                    browser::SourceId::Horizon | browser::SourceId::Modrinth
-                ))
-            && !(cfg!(target_pointer_width = "64")
-                && project.kind == Kind::Mod
-                && project.source == browser::SourceId::Horizon)
-        {
+        if project.kind == Kind::Mod && !cfg!(target_pointer_width = "64") {
+            self.status = "Horizon mods require a 64-bit APK".into();
             return;
         }
         self.downloading = Some((project.source, project.id.clone()));
@@ -721,5 +680,17 @@ impl Catalog {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod source_policy_tests {
+    use super::*;
+
+    #[test]
+    fn each_download_category_uses_only_its_supported_provider() {
+        assert_eq!(source_for(Page::Mods), browser::SourceId::Horizon);
+        assert_eq!(source_for(Page::Packs), browser::SourceId::Modrinth);
+        assert_eq!(source_for(Page::Shaders), browser::SourceId::Modrinth);
     }
 }
