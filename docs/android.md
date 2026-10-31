@@ -221,6 +221,20 @@ are not source-controlled. Chat/F3/F5 use regions of `gui.png`; other states use
 `ui/` and `controls/`. A resource pack can override them under
 `assets/minecraft/textures/gui/bedrock/<relative path>`.
 
+## Build APK with GitHub Actions
+
+The repository includes `.github/workflows/android-build.yml`. Push the source to
+your GitHub repository, open **Actions > Build Android APK > Run workflow**,
+choose the target ABI, and start the workflow. The workflow prepares the pinned
+Minecraft engine data, builds a public release APK, verifies it, and uploads the
+APK as a downloadable workflow artifact. The first run can take a while because
+it downloads the pinned game inputs and compiles the Rust engine.
+
+The default ABI is `arm64-v8a`, recommended for most modern Android phones.
+Choose `x86_64` for x86-64 emulators, or one of the legacy ABIs only when you
+know the target device needs it. Each run builds one ABI to keep CI resource use
+manageable.
+
 ## Check
 
 ```sh
