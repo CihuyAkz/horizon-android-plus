@@ -7,19 +7,26 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: extract-zip-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   extract:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout current branch
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+          persist-credentials: true
 
       - name: Find ZIP
         shell: bash
         run: |
-          set -e
-
+          set -euo pipefail
           ZIP_FILE=$(find . -maxdepth 1 -type f -iname "*.zip" -print -quit)
 
           if [ -z "$ZIP_FILE" ]; then
@@ -27,39 +34,29 @@ jobs:
             exit 1
           fi
 
-          echo "ZIP ditemukan: $ZIP_FILE"
           echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
 
       - name: Extract ZIP
         shell: bash
         run: |
-          set -e
-
+          set -euo pipefail
           rm -rf /tmp/extracted
           mkdir -p /tmp/extracted
-
           unzip -q "$ZIP_FILE" -d /tmp/extracted
 
-          echo "ZIP berhasil diekstrak."
-
-      - name: Flatten folders
+      - name: Find source root
         shell: bash
         run: |
-          set -e
-
+          set -euo pipefail
           CURRENT="/tmp/extracted"
 
           while true; do
             entries=()
-
             while IFS= read -r -d '' item; do
               entries+=("$item")
             done < <(
-              find "$CURRENT" \
-                -mindepth 1 \
-                -maxdepth 1 \
-                ! -name ".github" \
-                -print0
+              find "$CURRENT" -mindepth 1 -maxdepth 1 \
+                ! -name ".github" -print0
             )
 
             if [ "${#entries[@]}" -ne 1 ]; then
@@ -67,63 +64,39 @@ jobs:
             fi
 
             item="${entries[0]}"
-
             if [ ! -d "$item" ]; then
               break
             fi
 
-            echo "Masuk ke folder: $item"
             CURRENT="$item"
           done
 
-          echo "Root hasil ekstraksi: $CURRENT"
+          if [ -z "$(find "$CURRENT" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+            echo "ERROR: ZIP kosong."
+            exit 1
+          fi
 
           rm -rf /tmp/final
           mkdir -p /tmp/final
-
           cp -a "$CURRENT"/. /tmp/final/
 
       - name: Merge extracted files
         shell: bash
         run: |
-          set -e
-
-          if [ -d "/tmp/final/.github" ]; then
-            rm -rf /tmp/final/.github
-          fi
-
-          rsync -av \
-            --exclude='/.github/' \
-            /tmp/final/ ./
-
-          echo "File baru berhasil ditambahkan."
-          echo "File yang sama berhasil diperbarui."
-          echo "File lama yang tidak ada di ZIP tetap dipertahankan."
+          set -euo pipefail
+          rm -rf /tmp/final/.github
+          rsync -av --exclude='/.github/' /tmp/final/ ./
 
       - name: Remove source ZIP
         shell: bash
         run: |
-          set -e
-
+          set -euo pipefail
           rm -f "$ZIP_FILE"
-
-          echo "Source ZIP dihapus: $ZIP_FILE"
-
-      - name: Show repository files
-        shell: bash
-        run: |
-          set -e
-
-          echo "Hasil akhir:"
-
-          find . -maxdepth 3 -type f \
-            ! -path "./.git/*" \
-            | sort
 
       - name: Commit and Push
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -137,4 +110,10 @@ jobs:
 
           git commit -m "Add or update source from ZIP"
 
-          git push origin HEAD:main
+          TARGET_BRANCH="$GITHUB_REF_NAME"
+
+          echo "Push ke branch: $TARGET_BRANCH"
+
+          git push origin "HEAD:refs/heads/$TARGET_BRANCH"
+
+          echo "Push berhasil!"
