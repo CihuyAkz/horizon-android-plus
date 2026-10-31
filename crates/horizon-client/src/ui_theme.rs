@@ -62,7 +62,7 @@ pub mod color {
     pub const MUTED: u32 = hex(P.ink_soft, 255);
     pub const ACCENT: u32 = hex(P.accent, 255);
     pub const ON_ACCENT: u32 = hex(P.on_accent, 255);
-    pub(crate) fn with_alpha(c: u32, a: f32) -> u32 {
+    pub fn with_alpha(c: u32, a: f32) -> u32 {
         let base = (c >> 24) as f32;
         (c & 0x00ff_ffff) | ((base * a.clamp(0.0, 1.0)).round() as u32) << 24
     }
