@@ -1,0 +1,138 @@
+diff --git a/crates/horizon-client/src/android/documents.rs b/crates/horizon-client/src/android/documents.rs
+index 0000000..0000000 100644
+--- a/crates/horizon-client/src/android/documents.rs
++++ b/crates/horizon-client/src/android/documents.rs
+@@ -265,6 +265,7 @@
+         let classic_shader = request.kind == Kind::Shaders
+             && name.to_ascii_lowercase().ends_with(".zip")
+             && !native_shader;
++        let mut shader_compatibility = None;
+         let (target, installed_path) = if classic_shader {
+             let stem = PathBuf::from(&name)
+                 .file_stem()
+@@ -278,6 +279,11 @@
+             content_files::extract_shader_archive(&staged, &extracted, || {
+                 CANCEL.load(Ordering::Relaxed)
+             })?;
++            shader_compatibility = content_files::check_and_convert_classic_shader(&extracted)
++                .map_err(|error| {
++                    remove_path(&extracted);
++                    error
++                })?;
+             let _ = std::fs::remove_file(&staged);
+             (dir.join(stem), extracted)
+         } else {
+@@ -301,11 +307,11 @@
+             }
+             imported(
+                 if classic_shader {
+-                    format!(
+-                        "Extracted {} into shaderpacks/{}. Enable it in game settings.",
+-                        name,
+-                        target.file_name().unwrap_or_default().to_string_lossy()
+-                    )
++                    match shader_compatibility {
++                        Some(true) => format!("Converted {} for Horizon. Only shaders/lib/common.glsl changed; all other shader files were preserved.", name),
++                        Some(false) => format!("{} already has the verified Horizon compatibility change. No shader source files were changed.", name),
++                        None => format!("{} was imported unchanged. No verified Horizon conversion rule matched this Iris/OptiFine ZIP.", name),
++                    }
+                 } else {
+                     format!(
+                         "Imported {} into {}. Enable it in game settings.",
+diff --git a/crates/horizon-client/src/android/launcher_pages.rs b/crates/horizon-client/src/android/launcher_pages.rs
+index 0000000..0000000 100644
+--- a/crates/horizon-client/src/android/launcher_pages.rs
++++ b/crates/horizon-client/src/android/launcher_pages.rs
+@@ -301,12 +301,46 @@
+             color::with_alpha(color::ACCENT, 0.025),
+         );
++        let ambient_pulse = 0.5 + 0.5 * (animation * 0.82).sin();
++        for index in 0..5 {
++            let offset = index as f32;
++            let x = (animation * 13.0 + offset * 83.0).rem_euclid(w + 24.0) - 12.0;
++            let y = 148.0 + offset * 37.0 + (animation * 0.65 + offset).sin() * 5.0;
++            ui.rounded(
++                x,
++                y,
++                2.0,
++                2.0,
++                1.0,
++                color::with_alpha(color::ACCENT, 0.045 + ambient_pulse * 0.035),
++            );
++        }
++        ui.rounded(
++            16.0,
++            4.0,
++            50.0,
++            50.0,
++            17.0,
++            color::with_alpha(color::ACCENT, 0.035 + ambient_pulse * 0.035),
++        );
++        ui.border(
++            12.0 - ambient_pulse * 1.5,
++            0.0,
++            58.0 + ambient_pulse * 3.0,
++            58.0 + ambient_pulse * 3.0,
++            20.0,
++            color::with_alpha(color::ACCENT, 0.10 + ambient_pulse * 0.10),
++        );
+         ui.rounded(24.0, 12.0, 34.0, 34.0, 11.0, color::ACCENT);
+         ui.text(Face::Medium, 22.0, 34.0, 16.0, color::ON_ACCENT, "H");
++        let brand_label = if w < 520.0 { "Horizon+" } else { "Horizon Android Plus" };
++        let brand_size = if w < 400.0 { 18.0 } else { 22.0 };
++        let brand_width = if w < 700.0 { (w - 226.0).max(72.0) } else { 330.0 };
++        let brand_label = ui.fit_text(Face::Medium, brand_size, brand_label, brand_width);
+         ui.text(
+             Face::Medium,
+-            if w < 400.0 { 22.0 } else { 25.0 },
++            brand_size,
+             70.0,
+-            10.0,
++            12.0,
+             color::TEXT,
+-            "Horizon",
++            &brand_label,
+         );
+@@ -399,4 +433,15 @@
+                     Action::Page(*page),
+                     *page == self.catalog.page,
+                 );
++            if *page == self.catalog.page {
++                let tab_pulse = 0.5 + 0.5 * (animation * 1.1).sin();
++                ui.rounded(
++                    x + 9.0,
++                    124.0,
++                    (tab_width - 21.0).max(10.0),
++                    2.0,
++                    1.0,
++                    color::with_alpha(color::ON_ACCENT, 0.55 + tab_pulse * 0.40),
++                );
++            }
+         }
+@@ -409,5 +454,14 @@
+             let installed = horizon_client::official_install::ready(&self.home);
+             let installing = self.worker.is_some();
+             let progress = *self.install.lock().unwrap();
++            let hero_pulse = 0.5 + 0.5 * (animation * 0.9).sin();
+             let top = 176.0;
+             panel(&mut ui, [20.0, 144.0, w - 40.0, 264.0], 22.0, true);
++            ui.border(
++                20.0,
++                144.0,
++                w - 40.0,
++                264.0,
++                22.0,
++                color::with_alpha(color::ACCENT, 0.035 + hero_pulse * 0.055),
++            );
+@@ -720,3 +774,3 @@
+-                Page::Shaders => "Import .hshader packs or classic shader ZIPs; ZIPs extract automatically",
++                Page::Shaders => "Compatibility scan: validate Horizon .hshader or convert verified Iris/OptiFine ZIP patterns",
+                 _ => "Verified downloads / enable in Installed",
+             };
+@@ -743,5 +797,5 @@
+                 [w - 32.0 - file_button_width, 222.0, file_button_width, 38.0],
+-                if page == Page::Shaders { "Import shader" } else { "Import file" },
++                if page == Page::Shaders { "Check & Convert" } else { "Import file" },
+                 Action::Import(kind),
+                 true,
+             );
