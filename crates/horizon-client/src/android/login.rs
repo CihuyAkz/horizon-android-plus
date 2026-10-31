@@ -175,14 +175,14 @@ impl Login {
         let h = (ui.h - 24.0).min(550.0);
         let x = (ui.w - w) / 2.0;
         let y = (ui.h - h) / 2.0;
-        ui.rounded(x, y, w, h, 8.0, color::BG);
+        ui.rounded(x, y, w, h, 8.0, color::bg());
         if editing_name {
             ui.text(
                 Face::Medium,
                 24.0,
                 x + 20.0,
                 y + 20.0,
-                color::TEXT,
+                color::text(),
                 "Offline player name",
             );
             ui.text(
@@ -190,7 +190,7 @@ impl Login {
                 16.0,
                 x + 20.0,
                 y + 66.0,
-                color::MUTED,
+                color::muted(),
                 "Used when signed out of Microsoft.",
             );
             button(
@@ -217,7 +217,7 @@ impl Login {
             24.0,
             x + 20.0,
             y + 18.0,
-            color::TEXT,
+            color::text(),
             "Accounts",
         );
         ui.text(
@@ -226,9 +226,9 @@ impl Login {
             x + 20.0,
             y + 58.0,
             if self.signed_in {
-                color::ACCENT
+                color::accent()
             } else {
-                color::MUTED
+                color::muted()
             },
             &self.status(offline_name),
         );
@@ -247,7 +247,7 @@ impl Login {
                 16.0,
                 x + 20.0,
                 y + 104.0,
-                color::TEXT,
+                color::text(),
                 if self.signed_in {
                     "Account saved securely. Sessions renew automatically."
                 } else {
@@ -269,7 +269,7 @@ impl Login {
                     14.0,
                     x + 20.0,
                     y + 166.0 + row as f32 * 20.0,
-                    color::TEXT,
+                    color::text(),
                     &line,
                 );
                 row += 1;
@@ -289,7 +289,7 @@ impl Login {
                 14.0,
                 x + 20.0,
                 y + 166.0 + row as f32 * 20.0,
-                color::TEXT,
+                color::text(),
                 &line,
             );
         }
@@ -299,7 +299,7 @@ impl Login {
                 14.0,
                 x + 20.0,
                 y + h - 247.0,
-                color::MUTED,
+                color::muted(),
                 "Offline player name",
             );
             button(

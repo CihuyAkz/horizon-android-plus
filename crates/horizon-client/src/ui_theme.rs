@@ -42,26 +42,74 @@ pub(crate) fn set_preference(dir: &Path, key: &str, value: Option<&str>) {
 /// The dark palette (`horizon_theme::DARK`) in the HUD's colour encoding, plus the
 /// translucent plates the overlays draw over the game.
 pub mod color {
-    use horizon_theme::DARK as P;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static LIGHT: AtomicBool = AtomicBool::new(false);
+
     pub const fn hex(c: u32, a: u8) -> u32 {
         (a as u32) << 24 | (c & 0xff) << 16 | (c >> 8 & 0xff) << 8 | (c >> 16 & 0xff)
     }
-    /// The page, under every veil.
-    pub const BG: u32 = hex(P.page, 255);
-    /// Hover plates, secondary buttons, fields, the segmented track: the
-    /// dark palette's soft plate, as ink over the veil so the plates read the
-    /// same over any backdrop (over the page colour they are `plate_soft`).
-    pub const RAISED: u32 = hex(P.ink, 20);
-    /// Pressed plates and a switch that is off (`plate`, the same way).
-    pub const HOVER: u32 = hex(P.ink, 36);
-    /// One-pixel rules between rows, slider tracks.
-    pub const BORDER: u32 = hex(P.rule, 255);
-    /// Text and selection (`ink`).
-    pub const TEXT: u32 = hex(P.ink, 255);
-    /// Values and secondary text (`ink_soft`).
-    pub const MUTED: u32 = hex(P.ink_soft, 255);
-    pub const ACCENT: u32 = hex(P.accent, 255);
-    pub const ON_ACCENT: u32 = hex(P.on_accent, 255);
+
+    pub fn set_light(enabled: bool) {
+        LIGHT.store(enabled, Ordering::Relaxed);
+    }
+
+    pub fn is_light() -> bool {
+        LIGHT.load(Ordering::Relaxed)
+    }
+
+    pub fn bg() -> u32 {
+        hex(if is_light() { 0xf3f2f7 } else { 0x101116 }, 255)
+    }
+
+    pub fn surface() -> u32 {
+        hex(if is_light() { 0xffffff } else { 0x17191f }, 255)
+    }
+
+    pub fn raised() -> u32 {
+        hex(if is_light() { 0xf8f7fb } else { 0x1d2028 }, 255)
+    }
+
+    pub fn surface_3() -> u32 {
+        hex(if is_light() { 0xeeedf4 } else { 0x252934 }, 255)
+    }
+
+    pub fn hover() -> u32 {
+        hex(if is_light() { 0xe8e6f0 } else { 0x292e39 }, 255)
+    }
+
+    pub fn border() -> u32 {
+        if is_light() { hex(0x1e1932, 23) } else { hex(0xe5e7f5, 22) }
+    }
+
+    pub fn text() -> u32 {
+        hex(if is_light() { 0x23212d } else { 0xf1f0f8 }, 255)
+    }
+
+    pub fn muted() -> u32 {
+        hex(if is_light() { 0x777485 } else { 0x9699a8 }, 255)
+    }
+
+    pub fn muted_2() -> u32 {
+        hex(if is_light() { 0x9794a3 } else { 0x747887 }, 255)
+    }
+
+    pub fn accent() -> u32 {
+        hex(if is_light() { 0x7659da } else { 0xe43bff }, 255)
+    }
+
+    pub fn accent_2() -> u32 {
+        hex(if is_light() { 0x6746d4 } else { 0xbd20e8 }, 255)
+    }
+
+    pub fn accent_soft() -> u32 {
+        if is_light() { hex(0x7659da, 26) } else { hex(0xe43bff, 36) }
+    }
+
+    pub fn on_accent() -> u32 {
+        hex(0x1c1729, 255)
+    }
+
     pub fn with_alpha(c: u32, a: f32) -> u32 {
         let base = (c >> 24) as f32;
         (c & 0x00ff_ffff) | ((base * a.clamp(0.0, 1.0)).round() as u32) << 24
@@ -79,9 +127,10 @@ pub(crate) const RADIUS_PLATE: f32 = horizon_theme::RADIUS_PLATE;
 pub enum Face {
     Regular,
     Medium,
+    Bold,
 }
 struct Fonts {
-    faces: [FontRef<'static>; 2],
+    faces: [FontRef<'static>; 3],
 }
 impl Fonts {
     fn load() -> Self {
@@ -90,6 +139,7 @@ impl Fonts {
             faces: [
                 f(horizon_theme::fonts::GEIST_REGULAR),
                 f(horizon_theme::fonts::GEIST_MEDIUM),
+                f(horizon_theme::fonts::GEIST_SEMIBOLD),
             ],
         }
     }
@@ -298,6 +348,24 @@ pub struct Ui<'a> {
 impl<'a> Ui<'a> {
     pub fn set_origin(&mut self, x: f32, y: f32) {
         self.origin = (x, y);
+    }
+    pub fn sprite(&mut self, name: &str, x: f32, y: f32, w: f32, h: f32) -> bool {
+        self.sprite_tinted(name, x, y, w, h, u32::MAX)
+    }
+    pub fn sprite_tinted(&mut self, name: &str, x: f32, y: f32, w: f32, h: f32, tint: u32) -> bool {
+        let Some(rect) = self.atlas.sprites.get(name).copied() else {
+            return false;
+        };
+        let scale = self.scale;
+        self.batch.rect_uv(
+            self.px_x(x) / scale,
+            self.px_y(y) / scale,
+            w * self.density / scale,
+            h * self.density / scale,
+            rect,
+            tint,
+        );
+        true
     }
     pub fn screen_rect(&self, rect: [f32; 4]) -> [f32; 4] {
         [rect[0] + self.origin.0, rect[1] + self.origin.1, rect[2], rect[3]]

@@ -80,7 +80,7 @@ impl NoResources {
 
     pub fn draw(&self, ui: &mut Ui) {
         let layout = self.layout(ui);
-        ui.rounded(0.0, 0.0, ui.w, ui.h, 0.0, color::BG);
+        ui.rounded(0.0, 0.0, ui.w, ui.h, 0.0, color::bg());
         let mut y = layout.y;
         ui.text_line(
             Face::Medium,
@@ -88,13 +88,13 @@ impl NoResources {
             TITLE_LINE,
             layout.x,
             y,
-            color::TEXT,
+            color::text(),
             TITLE,
         );
         y += TITLE_LINE + 16.0;
         for paragraph in &layout.lines {
             for line in paragraph {
-                ui.text_line(Face::Regular, BODY, LINE, layout.x, y, color::TEXT, line);
+                ui.text_line(Face::Regular, BODY, LINE, layout.x, y, color::text(), line);
                 y += LINE;
             }
             y += PARAGRAPH_GAP;
@@ -102,12 +102,12 @@ impl NoResources {
         for button in &layout.buttons {
             let hovered = button.contains(ui.cursor);
             let (plate, ink) = match (button.action, hovered) {
-                (Action::Download, false) => (color::ACCENT, color::ON_ACCENT),
+                (Action::Download, false) => (color::accent(), color::on_accent()),
                 (Action::Download, true) => {
-                    (color::with_alpha(color::ACCENT, 0.85), color::ON_ACCENT)
+                    (color::with_alpha(color::accent(), 0.85), color::on_accent())
                 }
-                (Action::Quit, false) => (color::RAISED, color::TEXT),
-                (Action::Quit, true) => (color::HOVER, color::TEXT),
+                (Action::Quit, false) => (color::raised(), color::text()),
+                (Action::Quit, true) => (color::hover(), color::text()),
             };
             let h = CONTROL;
             ui.rounded(button.x, button.y, button.w, h, h / 2.0, plate);
@@ -141,7 +141,7 @@ impl NoResources {
                 SMALL_LINE,
                 layout.x,
                 line_y,
-                color::MUTED,
+                color::muted(),
                 line,
             );
         }

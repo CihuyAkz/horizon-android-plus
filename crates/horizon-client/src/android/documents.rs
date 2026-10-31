@@ -281,7 +281,7 @@ fn stage(request: Request, mut input: std::fs::File, name: String) -> Result<()>
             let _ = std::fs::remove_file(&staged);
             (dir.join(stem), extracted)
         } else {
-            (dir.join(&name), staged.clone())
+            (dir.join(name), staged.clone())
         };
         if std::fs::symlink_metadata(&target).is_ok() {
             STATE.lock().unwrap_or_else(|e| e.into_inner()).conflict = Some(Conflict {
@@ -496,13 +496,13 @@ pub fn draw_ui(ui: &mut Ui<'_>) {
     let x = (ui.w - w) / 2.0;
     let y = ((ui.h - height) / 2.0).max(0.0);
     ui.rounded(0.0, 0.0, ui.w, ui.h, 0.0, rgba(0, 0, 0, 180));
-    ui.rounded(x, y, w, height, 2.0, color::BG);
+    ui.rounded(x, y, w, height, 2.0, color::bg());
     ui.text(
         Face::Medium,
         20.0,
         x + 12.0,
         y + 12.0,
-        color::TEXT,
+        color::text(),
         if s.conflict.is_some() {
             "File exists"
         } else {
@@ -510,12 +510,12 @@ pub fn draw_ui(ui: &mut Ui<'_>) {
         },
     );
     let name = ui.fit_text(Face::Regular, 16.0, &name, w - 24.0);
-    ui.text(Face::Regular, 16.0, x + 12.0, y + 46.0, color::MUTED, &name);
+    ui.text(Face::Regular, 16.0, x + 12.0, y + 46.0, color::muted(), &name);
     if s.conflict.is_none() {
         let track_x = x + 12.0;
         let track_width = w - 24.0;
         let track_y = y + 76.0;
-        ui.rounded(track_x, track_y, track_width, 3.0, 1.5, color::BORDER);
+        ui.rounded(track_x, track_y, track_width, 3.0, 1.5, color::border());
         let elapsed = ANIMATION_START.get_or_init(Instant::now).elapsed().as_secs_f32();
         let shuttle_width = (track_width * 0.28).clamp(22.0, 72.0);
         let shuttle_x = track_x
@@ -530,7 +530,7 @@ pub fn draw_ui(ui: &mut Ui<'_>) {
                 shuttle_right - shuttle_left,
                 3.0,
                 1.5,
-                color::ACCENT,
+                color::accent(),
             );
         }
     }
@@ -541,13 +541,13 @@ pub fn draw_ui(ui: &mut Ui<'_>) {
         } else {
             [x + 12.0 + i as f32 * width, y + 92.0, width - 4.0, 38.0]
         };
-        ui.rounded(rect[0], rect[1], rect[2], rect[3], 2.0, color::RAISED);
+        ui.rounded(rect[0], rect[1], rect[2], rect[3], 2.0, color::raised());
         ui.text(
             Face::Medium,
             16.0,
             rect[0] + 8.0,
             rect[1] + 7.0,
-            color::TEXT,
+            color::text(),
             label,
         );
         s.hits.push((

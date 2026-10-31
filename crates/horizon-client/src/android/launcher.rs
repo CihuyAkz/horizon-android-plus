@@ -57,11 +57,50 @@ pub(super) struct Launcher {
     session_worker: Option<mpsc::Receiver<std::result::Result<Option<PathBuf>, String>>>,
     session_ready: bool,
     focus: Option<usize>,
-    diagnostic_export: Option<mpsc::Receiver<std::result::Result<String, String>>>,
+    drawer_open: bool,
+    sidebar_scroll: f32,
+    sidebar_view: Option<[f32; 3]>,
+    sidebar_width: f32,
+}
+
+fn ensure_launcher_assets(home: &std::path::Path) -> Result<()> {
+    let root = home.join("installer/assets/horizon/textures/gui");
+    std::fs::create_dir_all(&root)?;
+    for (name, data) in [
+        ("launcher-logo.png", include_bytes!("../../assets/horizon-launcher-logo.png").as_slice()),
+        ("launcher-home-glow.png", include_bytes!("../../assets/horizon-launcher-home-glow.png").as_slice()),
+        ("launcher-play-button.png", include_bytes!("../../assets/horizon-launcher-play-button.png").as_slice()),
+        ("icons/home.png", include_bytes!("../../assets/horizon-icons/home.png").as_slice()),
+        ("icons/download.png", include_bytes!("../../assets/horizon-icons/download.png").as_slice()),
+        ("icons/package.png", include_bytes!("../../assets/horizon-icons/package.png").as_slice()),
+        ("icons/box.png", include_bytes!("../../assets/horizon-icons/box.png").as_slice()),
+        ("icons/wand.png", include_bytes!("../../assets/horizon-icons/wand.png").as_slice()),
+        ("icons/library.png", include_bytes!("../../assets/horizon-icons/library.png").as_slice()),
+        ("icons/settings.png", include_bytes!("../../assets/horizon-icons/settings.png").as_slice()),
+        ("icons/user.png", include_bytes!("../../assets/horizon-icons/user.png").as_slice()),
+        ("icons/search.png", include_bytes!("../../assets/horizon-icons/search.png").as_slice()),
+        ("icons/bell.png", include_bytes!("../../assets/horizon-icons/bell.png").as_slice()),
+        ("icons/sun.png", include_bytes!("../../assets/horizon-icons/sun.png").as_slice()),
+        ("icons/moon.png", include_bytes!("../../assets/horizon-icons/moon.png").as_slice()),
+        ("icons/more.png", include_bytes!("../../assets/horizon-icons/more.png").as_slice()),
+        ("icons/layers.png", include_bytes!("../../assets/horizon-icons/layers.png").as_slice()),
+        ("icons/play.png", include_bytes!("../../assets/horizon-icons/play.png").as_slice()),
+    ] {
+        let path = root.join(name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        if std::fs::read(&path).ok().as_deref() != Some(data) {
+            std::fs::write(path, data)?;
+        }
+    }
+    Ok(())
 }
 
 impl Launcher {
     pub(super) fn new(home: PathBuf) -> Self {
+        let light_theme = horizon_client::ui_theme::preference(&home.join("installer"), "theme").as_deref() == Some("light");
+        horizon_client::ui_theme::color::set_light(light_theme);
         // Upgrade existing installations that retained the old download cache.
         let cleanup_home = home.clone();
         std::thread::spawn(move || {
@@ -71,10 +110,7 @@ impl Launcher {
                 log::warn!("Could not clean completed Minecraft downloads: {error}");
             }
         });
-        let mut catalog = Catalog::new(&home);
-        if crate::diagnostics::previous_unclean(&home) {
-            catalog.status = crate::diagnostics::summary(&home);
-        }
+        let catalog = Catalog::new(&home);
         crate::configure_input_mode(catalog.config.input_host);
         crate::device_runtime::configure(catalog.config.device);
         Self {
@@ -103,7 +139,10 @@ impl Launcher {
             session_worker: None,
             session_ready: false,
             focus: None,
-            diagnostic_export: None,
+            drawer_open: false,
+            sidebar_scroll: 0.0,
+            sidebar_view: None,
+            sidebar_width: 0.0,
         }
     }
 
@@ -136,7 +175,6 @@ impl Launcher {
         self.catalog.config.input_host = horizon_client::android_runtime::input_mode();
         self.catalog.refresh(&self.home);
         self.login.refresh_status();
-        crate::diagnostics::heartbeat("returned_to_launcher", || serde_json::json!({}));
         self.catalog.page = Page::Play;
         if let Ok(message) = std::fs::read_to_string(self.home.join("android-error.txt")) {
             self.error = Some(message);
@@ -157,7 +195,6 @@ impl Launcher {
     }
     fn fail(&mut self, error: impl std::fmt::Display) {
         log::error!("{error}");
-        crate::diagnostics::record_error(&error.to_string());
         self.error = Some(error.to_string());
         let _ = std::fs::write(self.home.join("android-error.txt"), error.to_string());
     }
@@ -180,6 +217,7 @@ impl Launcher {
             events.create_window(Window::default_attributes().with_title("Horizon Android"))?,
         );
         crate::display::prepare(&window)?;
+        ensure_launcher_assets(&self.home)?;
         let gui = game::UiResources {
             atlas: HudAtlas::build(&self.home.join("installer"))?,
             panorama: Arc::new(horizon_client::gfx::panorama::Faces {
@@ -206,10 +244,6 @@ impl Launcher {
         if self.login.pending() {
             return Ok(());
         }
-        crate::diagnostics::heartbeat(
-            "play_requested",
-            || serde_json::json!({"renderer":self.catalog.config.renderer.label(),"resolution_percent":self.catalog.config.render_scale.percent()}),
-        );
         crate::configure_input_mode(self.catalog.config.input_host);
         crate::device_runtime::configure(self.catalog.config.device);
         if horizon_client::official_install::ready(&self.home) {
@@ -347,7 +381,6 @@ impl ApplicationHandler for Launcher {
         }
     }
     fn suspended(&mut self, events: &ActiveEventLoop) {
-        crate::diagnostics::heartbeat("suspended", || serde_json::json!({}));
         if let Some(game) = &mut self.game {
             return game.suspended(events);
         }
@@ -394,7 +427,6 @@ impl ApplicationHandler for Launcher {
             }
             WindowEvent::Touch(touch) => self.touch_event(events, touch),
             WindowEvent::Focused(false) => {
-                crate::diagnostics::heartbeat("launcher_background", || serde_json::json!({}));
                 horizon_client::android_runtime::clear_gamepads();
                 self.controller_repeat = None;
                 self.mouse_down = false;
@@ -420,10 +452,21 @@ impl ApplicationHandler for Launcher {
                     winit::event::MouseScrollDelta::LineDelta(_, y) => y * 42.0,
                     winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32 / self.ui_density(),
                 };
-                if let Some(chooser) = &mut self.chooser {
+                let density = self.ui_density();
+                let cursor = (self.cursor.0 as f32 / density, self.cursor.1 as f32 / density);
+                if let Some([top, bottom, maximum]) = self.sidebar_view
+                    && cursor.0 < self.sidebar_width
+                    && cursor.1 >= top
+                    && cursor.1 <= bottom
+                {
+                    self.sidebar_scroll = (self.sidebar_scroll - y).clamp(0.0, maximum);
+                } else if let Some(chooser) = &mut self.chooser {
                     chooser.scroll = (chooser.scroll - y).max(0.0);
                 } else {
                     self.catalog.scroll = (self.catalog.scroll - y).max(0.0);
+                }
+                if let Some(window) = &self.window {
+                    window.request_redraw();
                 }
                 Ok(())
             }
@@ -470,23 +513,6 @@ impl ApplicationHandler for Launcher {
             game.about_to_wait(events);
             self.restore_launcher(events);
             return;
-        }
-        crate::diagnostics::heartbeat("launcher", || serde_json::json!({}));
-        if let Some(result) = self
-            .diagnostic_export
-            .as_ref()
-            .and_then(|r| r.try_recv().ok())
-        {
-            self.diagnostic_export = None;
-            self.catalog.status = match result {
-                Ok(name) => {
-                    let _ = crate::platform::open_documents("reports");
-                    format!(
-                        "Saved {name} in Reports. Review the ZIP before sharing; nothing was uploaded."
-                    )
-                }
-                Err(error) => format!("Diagnostic export failed: {error}"),
-            };
         }
         crate::platform::poll_gamepad_connections();
         if let Err(error) = self.controller_frame(events) {

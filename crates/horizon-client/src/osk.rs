@@ -302,7 +302,7 @@ impl Keyboard {
             width + 24.0,
             height,
             ui_theme::RADIUS_PLATE,
-            color::with_alpha(color::BG, 0.94),
+            color::with_alpha(color::bg(), 0.94),
         );
         ui.border(
             x0 - 12.0,
@@ -310,7 +310,7 @@ impl Keyboard {
             width + 24.0,
             height,
             ui_theme::RADIUS_PLATE,
-            color::BORDER,
+            color::border(),
         );
         for (r, row) in self.rows().iter().enumerate() {
             let y = y0 + r as f32 * (KEY_H + GAP);
@@ -322,11 +322,11 @@ impl Keyboard {
                 let lit = matches!(key, Key::Shift) && (self.shift || self.caps)
                     || matches!(key, Key::Layer) && self.symbols;
                 let (plate, ink) = if focused {
-                    (color::ACCENT, color::ON_ACCENT)
+                    (color::accent(), color::on_accent())
                 } else if lit {
-                    (color::HOVER, color::TEXT)
+                    (color::hover(), color::text())
                 } else {
-                    (color::RAISED, color::TEXT)
+                    (color::raised(), color::text())
                 };
                 ui.rounded(x, y, w, KEY_H, ui_theme::RADIUS, plate);
                 let label = match key {
@@ -369,7 +369,7 @@ impl Keyboard {
             ui_theme::SMALL,
             x0 + width / 2.0,
             y0 + 5.0 * (KEY_H + GAP) + 2.0,
-            color::MUTED,
+            color::muted(),
             &line.join("   "),
         );
     }
