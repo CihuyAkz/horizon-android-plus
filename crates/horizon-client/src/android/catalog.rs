@@ -417,7 +417,7 @@ impl Catalog {
             self.request_search(home, false);
         }
     }
-    fn request_search(&mut self, home: &Path, refresh: bool) {
+    fn request_search(&mut self, _home: &Path, refresh: bool) {
         if !self.page.is_catalog() {
             return;
         }
@@ -446,7 +446,7 @@ impl Catalog {
         if self.busy() || self.search_worker.is_some() {
             return;
         }
-        let Some((page, source, text, offset)) = self.searches.take_next() else {
+        let Some((page, _source, text, offset)) = self.searches.take_next() else {
             return;
         };
         let (tx, rx) = mpsc::channel();

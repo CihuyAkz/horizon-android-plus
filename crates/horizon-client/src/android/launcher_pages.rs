@@ -415,17 +415,18 @@ impl Launcher {
                     progress.stage.label(),
                 );
             } else {
+                let launch_label = if installed {
+                    "Play".to_owned()
+                } else if self.error.is_some() {
+                    "Retry installation".to_owned()
+                } else {
+                    format!("Install Minecraft {}", horizon_core::VANILLA_VERSION)
+                };
                 button(
                     &mut ui,
                     &mut self.targets,
                     [32.0, h - 100.0, 320.0, 60.0],
-                    if installed {
-                        "Play"
-                    } else if self.error.is_some() {
-                        "Retry installation"
-                    } else {
-                        &format!("Install Minecraft {}", horizon_core::VANILLA_VERSION)
-                    },
+                    &launch_label,
                     Action::Play,
                     true,
                 );
