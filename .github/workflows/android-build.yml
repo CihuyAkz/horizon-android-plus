@@ -1,0 +1,96 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      abi:
+        description: Android CPU architecture
+        required: true
+        type: choice
+        default: arm64-v8a
+        options:
+          - arm64-v8a
+          - x86_64
+          - armeabi-v7a
+          - x86
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-apk-${{ github.ref }}-${{ inputs.abi }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build ${{ inputs.abi }} APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.local/ci-target
+      HORIZON_TELEMETRY_URL: "off"
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - name: Install Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;28.2.13676358"
+
+      - name: Install Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.14"
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            .local/ci-target
+          key: android-${{ runner.os }}-${{ inputs.abi }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: |
+            android-${{ runner.os }}-${{ inputs.abi }}-
+
+      - name: Prepare pinned Minecraft engine data
+        run: python tools/android_prepare.py
+
+      - name: Build public release APK
+        run: >-
+          python tools/android_build.py
+          --abi "${{ inputs.abi }}"
+          --public
+          --sdk "$ANDROID_HOME"
+          --java-home "$JAVA_HOME"
+          --gradle "$(command -v gradle)"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: horizon-android-${{ inputs.abi }}-apk
+          path: .local/android/apk/${{ inputs.abi }}/horizon-android-public.apk
+          if-no-files-found: error
+          retention-days: 14
