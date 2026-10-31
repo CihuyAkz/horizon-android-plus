@@ -24,7 +24,7 @@ pub fn preference(dir: &Path, key: &str) -> Option<String> {
     })
 }
 /// Set (or with None remove) one preference, keeping the others.
-pub(crate) fn set_preference(dir: &Path, key: &str, value: Option<&str>) {
+pub fn set_preference(dir: &Path, key: &str, value: Option<&str>) {
     let text = std::fs::read_to_string(dir.join("horizon.txt")).unwrap_or_default();
     let mut lines: Vec<String> = text
         .lines()
@@ -619,7 +619,7 @@ impl<'a> Ui<'a> {
     pub fn text(&mut self, face: Face, size: f32, x: f32, y: f32, color: u32, text: &str) -> f32 {
         self.text_line(face, size, (size * 1.45).round(), x, y, color, text)
     }
-    pub(crate) fn text_centered(
+    pub fn text_centered(
         &mut self,
         face: Face,
         size: f32,

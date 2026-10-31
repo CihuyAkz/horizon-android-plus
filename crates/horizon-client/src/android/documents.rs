@@ -281,7 +281,7 @@ fn stage(request: Request, mut input: std::fs::File, name: String) -> Result<()>
             let _ = std::fs::remove_file(&staged);
             (dir.join(stem), extracted)
         } else {
-            (dir.join(name), staged.clone())
+            (dir.join(&name), staged.clone())
         };
         if std::fs::symlink_metadata(&target).is_ok() {
             STATE.lock().unwrap_or_else(|e| e.into_inner()).conflict = Some(Conflict {
