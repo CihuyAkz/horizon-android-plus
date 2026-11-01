@@ -83,7 +83,48 @@ mod backend {
     }
 }
 
-use std::cell::RefCell;
+use std::{cell::RefCell, collections::VecDeque, sync::{Mutex, OnceLock}};
+use jni::{JNIEnv, objects::{JObject, JString}};
+
+static WEB_COMMANDS: OnceLock<Mutex<VecDeque<(i32, String)>>> = OnceLock::new();
+
+pub(crate) fn take_web_commands() -> Vec<(i32, String)> {
+    WEB_COMMANDS.get_or_init(|| Mutex::new(VecDeque::new()))
+        .lock().unwrap_or_else(|error| error.into_inner())
+        .drain(..).collect()
+}
+
+#[unsafe(export_name = "Java_dev_horizon_android_HorizonActivity_nativeWebCommand")]
+pub extern "system" fn native_web_command(
+    mut env: JNIEnv<'_>,
+    _activity: JObject<'_>,
+    action: i32,
+    payload: JString<'_>,
+) {
+    if !(1..=11).contains(&action) { return; }
+    let value = if payload.is_null() {
+        String::new()
+    } else {
+        match env.get_string(&payload) {
+            Ok(value) => value.into(),
+            Err(_) => { let _ = env.exception_clear(); return; }
+        }
+    };
+    if value.len() > 1024 { return; }
+    let queue = WEB_COMMANDS.get_or_init(|| Mutex::new(VecDeque::new()));
+    let mut queue = queue.lock().unwrap_or_else(|error| error.into_inner());
+    if queue.len() < 32 { queue.push_back((action, value)); }
+}
+
+#[unsafe(export_name = "Java_dev_horizon_android_HorizonActivity_nativeWebStatus")]
+pub extern "system" fn native_web_status(
+    mut env: JNIEnv<'_>,
+    _activity: JObject<'_>,
+) -> jni::sys::jstring {
+    let value = crate::launcher::web_status();
+    env.new_string(value).map(|value| value.into_raw()).unwrap_or(std::ptr::null_mut())
+}
+
 pub(crate) fn keyboard_mouse_input() -> bool {
     horizon_client::android_runtime::active_input() == catalog::InputHost::KeyboardMouse
 }

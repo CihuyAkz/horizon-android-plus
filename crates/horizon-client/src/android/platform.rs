@@ -198,6 +198,18 @@ fn vibrate_gamepad(pulse: horizon_client::gamepad::Pulse, amplitude: i32) -> boo
     .unwrap_or(false)
 }
 
+pub(crate) fn set_web_launcher_visible(visible: bool) {
+    with_context(|env, activity| {
+        env.call_method(
+            activity,
+            "setWebLauncherVisible",
+            "(Z)V",
+            &[JValue::Bool(if visible { 1 } else { 0 })],
+        )?;
+        Ok(())
+    });
+}
+
 pub(crate) fn with_context<R>(
     f: impl FnOnce(&mut JNIEnv<'_>, &JObject<'_>) -> jni::errors::Result<R>,
 ) -> Option<R> {

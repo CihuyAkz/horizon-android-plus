@@ -4,6 +4,12 @@ use crate::game;
 #[path = "login.rs"]
 mod login;
 thread_local! {static SESSION:std::cell::RefCell<Option<PathBuf>>=const{std::cell::RefCell::new(None)};}
+static WEB_STATUS: std::sync::OnceLock<Mutex<String>> = std::sync::OnceLock::new();
+static WEB_STATUS_PUBLISHED_AT: std::sync::OnceLock<Mutex<Option<Instant>>> = std::sync::OnceLock::new();
+pub(super) fn web_status() -> String {
+    WEB_STATUS.get_or_init(|| Mutex::new(r#"{"connected":true}"#.into()))
+        .lock().unwrap_or_else(|error| error.into_inner()).clone()
+}
 pub(crate) fn session_argument() -> Option<PathBuf> {
     SESSION.with(|s| s.borrow_mut().take())
 }
@@ -98,6 +104,308 @@ fn ensure_launcher_assets(home: &std::path::Path) -> Result<()> {
 }
 
 impl Launcher {
+    fn publish_web_status(&self) {
+        let now = Instant::now();
+        let published_at = WEB_STATUS_PUBLISHED_AT.get_or_init(|| Mutex::new(None));
+        let mut published_at = published_at.lock().unwrap_or_else(|error| error.into_inner());
+        if published_at.is_some_and(|last| now.duration_since(last) < Duration::from_millis(750)) {
+            return;
+        }
+        *published_at = Some(now);
+        drop(published_at);
+        let progress = *self.install.lock().unwrap_or_else(|error| error.into_inner());
+        let installing = self.worker.is_some();
+        let game_home = self.catalog.config.game_home(&self.home);
+        let items = self.catalog.local.iter().enumerate().map(|(index, item)| {
+            let kind = match item.kind {
+                horizon_client::content_files::Kind::Mods => "mods",
+                horizon_client::content_files::Kind::Packs => "resourcepacks",
+                horizon_client::content_files::Kind::Shaders => "shaders",
+            };
+            serde_json::json!({
+                "index": index,
+                "kind": kind,
+                "file": item.file,
+                "title": item.title,
+                "enabled": item.enabled,
+            })
+        }).collect::<Vec<_>>();
+        let saves = game_home.join("saves");
+        let mut worlds = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&saves) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Ok(meta) = std::fs::symlink_metadata(&path) else { continue; };
+                if !meta.is_dir() || meta.file_type().is_symlink() || !path.join("level.dat").is_file() {
+                    continue;
+                }
+                let modified = meta.modified().ok()
+                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|duration| duration.as_secs()).unwrap_or(0);
+                worlds.push(serde_json::json!({
+                    "name": entry.file_name().to_string_lossy(),
+                    "modified": modified,
+                }));
+            }
+        }
+        worlds.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+        let signed_in = self.login.signed_in;
+        let content_operation = crate::documents::take_web_result().map(|(id, kind, message)| {
+            serde_json::json!({
+                "id": id,
+                "kind": match kind {
+                    horizon_client::content_files::Kind::Mods => "mods",
+                    horizon_client::content_files::Kind::Packs => "resourcepacks",
+                    horizon_client::content_files::Kind::Shaders => "shaders",
+                },
+                "message": message,
+            })
+        });
+        let content_conflict = crate::documents::web_conflict().map(|(kind, filename, message)| {
+            serde_json::json!({
+                "kind": match kind {
+                    horizon_client::content_files::Kind::Mods => "mods",
+                    horizon_client::content_files::Kind::Packs => "resourcepacks",
+                    horizon_client::content_files::Kind::Shaders => "shaders",
+                },
+                "filename": filename,
+                "message": message,
+                "canKeepBoth": kind != horizon_client::content_files::Kind::Mods,
+            })
+        });
+        let value = serde_json::json!({
+            "connected": true,
+            "version": horizon_core::VANILLA_VERSION,
+            "installed": horizon_client::official_install::ready(&self.home),
+            "installing": installing,
+            "busy": installing || self.session_worker.is_some() || crate::documents::busy(),
+            "install": {
+                "stage": progress.stage.label(),
+                "done": progress.done,
+                "total": progress.total,
+            },
+            "status": self.catalog.status,
+            "error": self.error,
+            "account": {
+                "profile": self.login.profile,
+                "signedIn": signed_in,
+                "pending": self.login.pending(),
+                "offlineName": self.catalog.config.name,
+                "status": self.login.status(&self.catalog.config.name),
+                "message": self.login.message(),
+            },
+            "settings": {
+                "renderer": match self.catalog.config.renderer {
+                    crate::catalog::RendererMode::Vulkan => "vulkan",
+                    crate::catalog::RendererMode::OpenGl => "open-gl",
+                    crate::catalog::RendererMode::VulkanCompatibility => "vulkan-compatibility",
+                },
+                "renderScalePercent": self.catalog.config.render_scale.percent(),
+                "orientation": match self.catalog.config.orientation {
+                    crate::catalog::Orientation::Landscape => "landscape",
+                    crate::catalog::Orientation::Portrait => "portrait",
+                    crate::catalog::Orientation::ReverseLandscape => "reverse-landscape",
+                    crate::catalog::Orientation::ReversePortrait => "reverse-portrait",
+                    crate::catalog::Orientation::Auto => "auto",
+                },
+                "immersive": self.catalog.config.screen.immersive,
+                "avoidCutout": self.catalog.config.screen.avoid_cutout,
+                "aspect": match self.catalog.config.screen.aspect {
+                    crate::display::Aspect::Native => "native",
+                    crate::display::Aspect::Wide => "wide",
+                    crate::display::Aspect::Classic => "classic",
+                    crate::display::Aspect::Square => "square",
+                },
+                "displayHz": self.catalog.config.device.display_hz,
+                "performanceHints": self.catalog.config.device.performance_hints,
+                "gpuProfile": self.catalog.config.device.gpu_profile,
+                "recordPerformance": self.catalog.config.record_performance,
+            },
+            "items": items,
+            "worlds": worlds,
+            "operation": content_operation,
+            "conflict": content_conflict,
+        });
+        *WEB_STATUS.get_or_init(|| Mutex::new(String::new()))
+            .lock().unwrap_or_else(|error| error.into_inner()) = value.to_string();
+    }
+
+    fn apply_web_setting(&mut self, payload: &str) -> Result<()> {
+        let request: serde_json::Value = serde_json::from_str(payload)
+            .map_err(|error| error.to_string())?;
+        let key = request.get("key").and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "Missing setting key".to_string())?;
+        let value = request.get("value")
+            .ok_or_else(|| "Missing setting value".to_string())?;
+        let mut orientation_changed = false;
+        let mut screen_changed = false;
+        let mut scale_changed = false;
+        let mut device_changed = false;
+        match key {
+            "renderer" => {
+                let mode = match value.as_str() {
+                    Some("vulkan") => crate::catalog::RendererMode::Vulkan,
+                    Some("open-gl") => crate::catalog::RendererMode::OpenGl,
+                    Some("vulkan-compatibility") => crate::catalog::RendererMode::VulkanCompatibility,
+                    _ => return Err("Unsupported rendering mode".into()),
+                };
+                self.catalog.config.renderer = mode;
+                self.catalog.status = "Rendering mode saved. It will be used on the next game launch.".into();
+            }
+            "renderScalePercent" => {
+                let percent = value.as_u64().and_then(|value| u32::try_from(value).ok())
+                    .ok_or_else(|| "Invalid client resolution scale".to_string())?;
+                if !(25..=100).contains(&percent) {
+                    return Err("Client resolution scale must be between 25 and 100 percent".into());
+                }
+                self.catalog.config.render_scale = crate::display::RenderScale::new(percent);
+                scale_changed = true;
+            }
+            "orientation" => {
+                self.catalog.config.orientation = match value.as_str() {
+                    Some("landscape") => crate::catalog::Orientation::Landscape,
+                    Some("portrait") => crate::catalog::Orientation::Portrait,
+                    Some("reverse-landscape") => crate::catalog::Orientation::ReverseLandscape,
+                    Some("reverse-portrait") => crate::catalog::Orientation::ReversePortrait,
+                    Some("auto") => crate::catalog::Orientation::Auto,
+                    _ => return Err("Unsupported screen orientation".into()),
+                };
+                orientation_changed = true;
+            }
+            "immersive" => {
+                self.catalog.config.screen.immersive = value.as_bool()
+                    .ok_or_else(|| "Invalid immersive fullscreen value".to_string())?;
+                screen_changed = true;
+            }
+            "avoidCutout" => {
+                self.catalog.config.screen.avoid_cutout = value.as_bool()
+                    .ok_or_else(|| "Invalid camera cutout value".to_string())?;
+                screen_changed = true;
+            }
+            "aspect" => {
+                self.catalog.config.screen.aspect = match value.as_str() {
+                    Some("native") => crate::display::Aspect::Native,
+                    Some("wide") => crate::display::Aspect::Wide,
+                    Some("classic") => crate::display::Aspect::Classic,
+                    Some("square") => crate::display::Aspect::Square,
+                    _ => return Err("Unsupported aspect ratio".into()),
+                };
+                screen_changed = true;
+            }
+            "displayHz" => {
+                let hz = value.as_u64().and_then(|value| u16::try_from(value).ok())
+                    .ok_or_else(|| "Invalid display refresh rate".to_string())?;
+                if !crate::device_preferences::DISPLAY_RATES.contains(&hz) {
+                    return Err("Unsupported display refresh rate".into());
+                }
+                self.catalog.config.device.display_hz = hz;
+                device_changed = true;
+            }
+            "performanceHints" => {
+                self.catalog.config.device.performance_hints = value.as_bool()
+                    .ok_or_else(|| "Invalid performance hint value".to_string())?;
+                device_changed = true;
+            }
+            "gpuProfile" => {
+                self.catalog.config.device.gpu_profile = value.as_bool()
+                    .ok_or_else(|| "Invalid GPU profiling value".to_string())?;
+                device_changed = true;
+            }
+            "recordPerformance" => {
+                self.catalog.config.record_performance = value.as_bool()
+                    .ok_or_else(|| "Invalid performance recording value".to_string())?;
+                if !self.catalog.config.record_performance {
+                    crate::performance::stop();
+                }
+            }
+            _ => return Err("Unsupported Android setting".into()),
+        }
+        self.catalog.config.save(&self.home).map_err(Into::into)?;
+        if orientation_changed {
+            crate::platform::set_orientation(self.catalog.config.orientation);
+        }
+        if screen_changed {
+            self.configure_screen();
+        }
+        if scale_changed {
+            crate::display::set_scale(self.catalog.config.render_scale);
+            if let (Some(window), Some(renderer)) = (&self.window, &mut self.renderer) {
+                crate::display::apply(window, renderer).map_err(Into::into)?;
+                window.request_redraw();
+            }
+        }
+        if device_changed {
+            crate::device_runtime::configure(self.catalog.config.device);
+        }
+        self.publish_web_status();
+        Ok(())
+    }
+
+    fn handle_web_commands(&mut self, events: &ActiveEventLoop) {
+        for (action, payload) in crate::take_web_commands() {
+            let result: Result<()> = match action {
+                1 => self.action(events),
+                2 => {
+                    self.login.start(&self.catalog.config.microsoft_client_id);
+                    self.login.hide();
+                    Ok(())
+                }
+                3 => {
+                    self.login.sign_out();
+                    self.login.hide();
+                    Ok(())
+                }
+                4 => {
+                    let kind = match payload.as_str() {
+                        "mods" => Some(horizon_client::content_files::Kind::Mods),
+                        "resourcepacks" => Some(horizon_client::content_files::Kind::Packs),
+                        "shaders" => Some(horizon_client::content_files::Kind::Shaders),
+                        _ => None,
+                    };
+                    if let Some(kind) = kind {
+                        crate::documents::begin(kind, self.catalog.config.game_home(&self.home))
+                            .map_err(Into::into)
+                    } else {
+                        Err("Unsupported content type".into())
+                    }
+                }
+                5 => {
+                    if let Ok(index) = payload.parse::<usize>() {
+                        self.catalog.toggle_local(&self.home, index);
+                        Ok(())
+                    } else { Err("Invalid content index".into()) }
+                }
+                6 => {
+                    if let Ok(index) = payload.parse::<usize>() {
+                        self.catalog.pending_delete = self.catalog.local.get(index).cloned();
+                        self.catalog.remove_local(&self.home);
+                        Ok(())
+                    } else { Err("Invalid content index".into()) }
+                }
+                7 => { self.catalog.refresh(&self.home); Ok(()) }
+                8 => {
+                    let name = payload.trim();
+                    if !(3..=16).contains(&name.len())
+                        || !name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+                    {
+                        Err("Offline player name must be 3–16 letters, numbers, or underscores".into())
+                    } else {
+                        self.catalog.config.name = name.to_owned();
+                        self.catalog.config.save(&self.home).map_err(Into::into)
+                    }
+                }
+                9 => crate::documents::resolve_web_conflict(&payload).map_err(Into::into),
+                10 => self.apply_web_setting(&payload),
+                11 => crate::performance::export(&self.home).map_err(|error| {
+                    std::io::Error::new(std::io::ErrorKind::Other, error).into()
+                }),
+                _ => Ok(()),
+            };
+            if let Err(error) = result { self.fail(error); }
+        }
+        self.publish_web_status();
+    }
+
     pub(super) fn new(home: PathBuf) -> Self {
         let light_theme = horizon_client::ui_theme::preference(&home.join("installer"), "theme").as_deref() == Some("light");
         horizon_client::ui_theme::color::set_light(light_theme);
@@ -182,6 +490,9 @@ impl Launcher {
         if let Err(error) = self.open(events) {
             self.fail(error);
             events.exit();
+        } else {
+            crate::platform::set_web_launcher_visible(true);
+            self.publish_web_status();
         }
     }
     pub(super) fn configure_screen(&self) {
@@ -331,6 +642,8 @@ impl Launcher {
                     return Err(error);
                 }
             };
+            // Hide the HTML layer only after the real game was successfully constructed.
+            crate::platform::set_web_launcher_visible(false);
             // Android has one native window; release its surface before handing it over.
             self.renderer = None;
             self.window = None;
@@ -512,6 +825,7 @@ impl ApplicationHandler for Launcher {
         if let Some(game) = &mut self.game {
             game.about_to_wait(events);
             self.restore_launcher(events);
+            if self.game.is_none() { self.publish_web_status(); }
             return;
         }
         crate::platform::poll_gamepad_connections();
@@ -565,6 +879,7 @@ impl ApplicationHandler for Launcher {
             }
         }
 
+        self.handle_web_commands(events);
         if let Some(window) = &self.window {
             window.request_redraw();
         }

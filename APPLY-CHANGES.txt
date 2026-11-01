@@ -1,0 +1,7 @@
+Apply this patch at the repository root (branch: android).
+
+Extract this ZIP directly into the repository root and allow the 7 listed files to be overwritten. The paths in this archive are already relative to the repository root.
+
+The patch includes: the HTML asset, Android WebView Activity/JavaScript bridge, Gradle asset source path, and Rust JNI/UI command + status integration.
+
+Do not replace only the HTML file: the Activity, Gradle asset source set and Rust bridge are all required for the HTML launcher to appear and work.

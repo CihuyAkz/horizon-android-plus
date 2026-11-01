@@ -27,6 +27,7 @@ struct Conflict {
     kind: Kind,
     staged: PathBuf,
     target: PathBuf,
+    message: String,
 }
 #[derive(Clone)]
 pub struct Notice {
@@ -43,6 +44,8 @@ struct State {
     hits: Vec<([f32; 4], Choice)>,
     toast: Option<(String, std::time::Instant)>,
     cursor: (f32, f32),
+    web_result_id: u64,
+    web_result: Option<(Kind, String)>,
 }
 #[derive(Clone, Copy)]
 pub enum Choice {
@@ -58,6 +61,8 @@ static STATE: Mutex<State> = Mutex::new(State {
     hits: Vec::new(),
     toast: None,
     cursor: (0.0, 0.0),
+    web_result_id: 0,
+    web_result: None,
 });
 static CANCEL: AtomicBool = AtomicBool::new(false);
 pub fn busy() -> bool {
@@ -91,12 +96,25 @@ fn remove_path(path: &std::path::Path) {
 fn imported(text: impl Into<String>, kind: Kind) {
     let text = text.into();
     let mut s = STATE.lock().unwrap_or_else(|e| e.into_inner());
+    s.web_result_id = s.web_result_id.wrapping_add(1);
+    s.web_result = Some((kind, text.clone()));
     s.toast = Some((text.clone(), std::time::Instant::now()));
     s.notice = Some(Notice {
         text,
         changed: true,
         kind: Some(kind),
     });
+}
+fn web_result(kind: Kind, text: impl Into<String>) {
+    let mut s = STATE.lock().unwrap_or_else(|e| e.into_inner());
+    s.web_result_id = s.web_result_id.wrapping_add(1);
+    s.web_result = Some((kind, text.into()));
+}
+pub fn take_web_result() -> Option<(u64, Kind, String)> {
+    let s = STATE.lock().unwrap_or_else(|e| e.into_inner());
+    s.web_result
+        .as_ref()
+        .map(|(kind, message)| (s.web_result_id, *kind, message.clone()))
 }
 pub fn poll() -> Option<Notice> {
     if crate::document_provider::take_changes() {
@@ -130,8 +148,43 @@ pub fn begin(kind: Kind, home: PathBuf) -> std::result::Result<(), String> {
     Ok(())
 }
 pub fn picker_failed(error: &str) {
-    STATE.lock().unwrap_or_else(|e| e.into_inner()).request = None;
+    let kind = STATE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .request
+        .take()
+        .map(|request| request.kind);
+    if let Some(kind) = kind {
+        web_result(kind, format!("Import failed: {error}"));
+    }
     notice(error, false);
+}
+
+pub fn web_conflict() -> Option<(Kind, String, String)> {
+    let state = STATE.lock().unwrap_or_else(|e| e.into_inner());
+    state.conflict.as_ref().map(|conflict| {
+        (
+            conflict.kind,
+            conflict
+                .target
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+            conflict.message.clone(),
+        )
+    })
+}
+
+pub fn resolve_web_conflict(choice: &str) -> std::result::Result<(), String> {
+    let choice = match choice {
+        "keep-both" => Choice::KeepBoth,
+        "replace" => Choice::Replace,
+        "cancel" => Choice::Cancel,
+        _ => return Err("Unsupported file-conflict option".into()),
+    };
+    resolve(choice);
+    Ok(())
 }
 /// Called by the approved Activity result bridge, never from a game tick.
 /// Keep a conventional JNI export as well as explicit registration: Android
@@ -157,6 +210,7 @@ pub extern "system" fn document_result(
         return;
     };
     if result != -1 || uri.is_null() {
+        web_result(pending.kind, "Import cancelled. No files were changed.");
         notice("Import cancelled", false);
         return;
     }
@@ -167,14 +221,17 @@ pub extern "system" fn document_result(
     })();
     let Ok((vm, activity, uri)) = setup else {
         let _ = env.exception_clear();
+        web_result(pending.kind, "Import failed: could not read the selected document.");
         notice("Could not read the selected document", false);
         return;
     };
     if !uri.starts_with("content://") || uri.len() > 8192 {
+        web_result(pending.kind, "Import failed: unsupported document URI.");
         notice("Unsupported document URI", false);
         return;
     }
     STATE.lock().unwrap_or_else(|e| e.into_inner()).working = true;
+    let operation_kind = pending.kind;
     let spawned = std::thread::Builder::new()
         .name("Content import".into())
         .spawn(move || {
@@ -195,12 +252,16 @@ pub extern "system" fn document_result(
             })();
             STATE.lock().unwrap_or_else(|e| e.into_inner()).working = false;
             if let Err(error) = result {
-                notice(format!("Import failed: {error}"), false);
+                let message = format!("Import failed: {error}");
+                web_result(operation_kind, message.clone());
+                notice(message, false);
             }
         });
     if let Err(error) = spawned {
         STATE.lock().unwrap_or_else(|e| e.into_inner()).working = false;
-        notice(format!("Import failed: {error}"), false);
+        let message = format!("Import failed: {error}");
+        web_result(operation_kind, message.clone());
+        notice(message, false);
     }
 }
 fn stage(request: Request, mut input: std::fs::File, name: String) -> Result<()> {
@@ -265,6 +326,7 @@ fn stage(request: Request, mut input: std::fs::File, name: String) -> Result<()>
         let classic_shader = request.kind == Kind::Shaders
             && name.to_ascii_lowercase().ends_with(".zip")
             && !native_shader;
+        let mut shader_compatibility = None;
         let (target, installed_path) = if classic_shader {
             let stem = PathBuf::from(&name)
                 .file_stem()
@@ -278,16 +340,41 @@ fn stage(request: Request, mut input: std::fs::File, name: String) -> Result<()>
             content_files::extract_shader_archive(&staged, &extracted, || {
                 CANCEL.load(Ordering::Relaxed)
             })?;
+            shader_compatibility = content_files::check_and_convert_classic_shader(&extracted)
+                .map_err(|error| {
+                    remove_path(&extracted);
+                    error
+                })?;
             let _ = std::fs::remove_file(&staged);
             (dir.join(stem), extracted)
         } else {
             (dir.join(&name), staged.clone())
+        };
+        let outcome = if classic_shader {
+            match shader_compatibility {
+                Some(true) => format!(
+                    "Converted {name} for Horizon. Only shaders/lib/common.glsl was changed; other shader files were preserved."
+                ),
+                Some(false) => format!(
+                    "{name} is already Horizon-compatible. No shader source files were changed."
+                ),
+                None => format!(
+                    "{name} was imported unchanged. No verified Horizon conversion rule matched this shader ZIP."
+                ),
+            }
+        } else {
+            format!(
+                "Imported {} into {}. Enable it in game settings.",
+                target.file_name().unwrap_or_default().to_string_lossy(),
+                request.kind.label()
+            )
         };
         if std::fs::symlink_metadata(&target).is_ok() {
             STATE.lock().unwrap_or_else(|e| e.into_inner()).conflict = Some(Conflict {
                 kind: request.kind,
                 staged: installed_path,
                 target,
+                message: outcome,
             });
             notice(
                 "Pack already exists: choose Keep both, Replace or Cancel",
@@ -298,22 +385,7 @@ fn stage(request: Request, mut input: std::fs::File, name: String) -> Result<()>
                 remove_path(&installed_path);
                 return Err(error.into());
             }
-            imported(
-                if classic_shader {
-                    format!(
-                        "Extracted {} into shaderpacks/{}. Enable it in game settings.",
-                        name,
-                        target.file_name().unwrap_or_default().to_string_lossy()
-                    )
-                } else {
-                    format!(
-                        "Imported {} into {}. Enable it in game settings.",
-                        target.file_name().unwrap_or_default().to_string_lossy(),
-                        request.kind.label()
-                    )
-                },
-                request.kind,
-            );
+            imported(outcome, request.kind);
         }
         Ok(())
     })();
@@ -333,6 +405,7 @@ pub fn resolve(choice: Choice) {
     };
     if matches!(choice, Choice::Cancel) {
         remove_path(&c.staged);
+        web_result(c.kind, "Import cancelled. The existing content was left unchanged.");
         notice("Import cancelled", false);
         return;
     }
@@ -409,13 +482,12 @@ pub fn resolve(choice: Choice) {
         Ok(())
     })();
     match result {
-        Ok(()) => imported(
-            "Import completed. Enable it in Installed or game settings.",
-            c.kind,
-        ),
+        Ok(()) => imported(c.message, c.kind),
         Err(e) => {
             remove_path(&c.staged);
-            notice(format!("Import failed: {e}"), false);
+            let message = format!("Import failed: {e}");
+            web_result(c.kind, message.clone());
+            notice(message, false);
         }
     }
 }

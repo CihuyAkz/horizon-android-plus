@@ -38,7 +38,7 @@ android {
         java.srcDirs = ['java']
         manifest.srcFile 'AndroidManifest.xml'
         jniLibs.srcDirs = ['../../.local/android/gradle-jni']
-        assets.srcDirs = ['../../.local/android/gradle-assets']
+        assets.srcDirs = ['assets', '../../.local/android/gradle-assets']
         res.srcDirs = ['res']
     }
     packaging { jniLibs { useLegacyPackaging = true; keepDebugSymbols += '**/*.so' } }
