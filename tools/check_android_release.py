@@ -14,6 +14,8 @@ import subprocess
 import zipfile
 
 ASSETS = {'assets/engine-data.zip', 'assets/bedrock-controls.zip'}
+# The trusted Android WebView launcher is application UI, not game data.
+APP_ASSETS = {'assets/Horizon-Android-Plus.html'}
 # AndroidX build-time optimization profiles, not player/account profiles.
 BUILD_ASSETS = {'assets/dexopt/baseline.prof', 'assets/dexopt/baseline.profm'}
 LICENSE_ASSETS = {'assets/LICENSE.txt', 'assets/THIRD_PARTY_NOTICES.md'}
@@ -58,7 +60,7 @@ def inspect_payload(path, public=False):
                 raise ValueError('APK exceeds audit decompression limits')
             if any(part.lower() in PRIVATE_PARTS for part in parts) or PurePosixPath(name).suffix.lower() in PRIVATE_SUFFIXES:
                 findings.append({'path': full, 'kind': 'private_file'})
-            if depth == 0 and name.startswith('assets/') and name not in ASSETS | BUILD_ASSETS | LICENSE_ASSETS:
+            if depth == 0 and name.startswith('assets/') and name not in ASSETS | APP_ASSETS | BUILD_ASSETS | LICENSE_ASSETS:
                 findings.append({'path': full, 'kind': 'unexpected_asset'})
             data = archive.read(entry)
             for kind, pattern in PATTERNS.items():
