@@ -3,6 +3,14 @@ name: Build Android APK
 on:
   workflow_dispatch:
     inputs:
+      build_type:
+        description: Build variant (Dev Builds do not bump the version; Public Builds bump the patch version)
+        required: true
+        type: choice
+        default: Dev Builds
+        options:
+          - Dev Builds
+          - Public Builds
       abi:
         description: Android CPU architecture
         required: true
@@ -15,15 +23,15 @@ on:
           - x86
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: android-apk-${{ github.ref }}-${{ inputs.abi }}
-  cancel-in-progress: true
+  group: android-apk-${{ github.ref }}-${{ inputs.build_type }}
+  cancel-in-progress: ${{ inputs.build_type == 'Dev Builds' }}
 
 jobs:
   build:
-    name: Build ${{ inputs.abi }} APK
+    name: Build ${{ inputs.build_type }} - ${{ inputs.abi }}
     runs-on: ubuntu-latest
     timeout-minutes: 240
     env:
@@ -34,7 +42,8 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          persist-credentials: false
+          fetch-depth: 0
+          persist-credentials: true
 
       - name: Install Python
         uses: actions/setup-python@v5
@@ -80,7 +89,97 @@ jobs:
       - name: Prepare pinned Minecraft engine data
         run: python tools/android_prepare.py
 
+      - name: Bump public version
+        id: bump
+        if: inputs.build_type == 'Public Builds'
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_TYPE" != "branch" ]]; then
+            echo "::error::Public Builds must be run from a branch so the version bump can be committed."
+            exit 1
+          fi
+
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          gradle_path = Path("packaging/android/build.gradle")
+          rust_path = Path("crates/horizon-client/src/android_main.rs")
+          gradle = gradle_path.read_text(encoding="utf-8")
+          rust = rust_path.read_text(encoding="utf-8")
+
+          code_pattern = re.compile(r"(?m)^([ \t]*versionCode[ \t]+)(\d+)([ \t]*(?://.*)?$)")
+          name_pattern = re.compile(
+              r"(?m)^([ \t]*versionName[ \t]+)(['\"])(\d+\.\d+\.\d+)\2([ \t]*(?://.*)?$)"
+          )
+          code_match = code_pattern.search(gradle)
+          name_match = name_pattern.search(gradle)
+          if code_match is None or name_match is None:
+              raise SystemExit("Could not find a numeric versionCode and SemVer versionName in build.gradle")
+
+          old_code = int(code_match.group(2))
+          old_version = name_match.group(3)
+          major, minor, patch = (int(part) for part in old_version.split("."))
+          new_version = f"{major}.{minor}.{patch + 1}"
+          new_code = old_code + 1
+          if new_code > 2_100_000_000:
+              raise SystemExit("Android versionCode exceeded the supported maximum")
+
+          gradle = code_pattern.sub(
+              lambda match: f"{match.group(1)}{new_code}{match.group(3)}", gradle, count=1
+          )
+          gradle = name_pattern.sub(
+              lambda match: (
+                  f"{match.group(1)}{match.group(2)}{new_version}"
+                  f"{match.group(2)}{match.group(4)}"
+              ),
+              gradle,
+              count=1,
+          )
+
+          rust_pattern = re.compile(
+              r'(pub const VERSION: &str = if crate::PUBLIC_BUILD\s*\{\s*)'
+              r'"[^\"]+"'
+              r'(\s*\}\s*else\s*\{\s*)'
+              r'"[^\"]+"'
+              r'(\s*\};)'
+          )
+          rust, rust_count = rust_pattern.subn(
+              lambda match: (
+                  f'{match.group(1)}"{new_version}"'
+                  f'{match.group(2)}"{new_version}-dev"'
+                  f'{match.group(3)}'
+              ),
+              rust,
+              count=1,
+          )
+          if rust_count != 1:
+              raise SystemExit("Could not find the Android backend PUBLIC_BUILD version block in android_main.rs")
+
+          gradle_path.write_text(gradle, encoding="utf-8")
+          rust_path.write_text(rust, encoding="utf-8")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"version_name={new_version}\n")
+              output.write(f"version_code={new_code}\n")
+
+          print(f"Public version bumped: {old_version} ({old_code}) -> {new_version} ({new_code})")
+          PY
+
+      - name: Commit public version bump
+        if: inputs.build_type == 'Public Builds'
+        env:
+          VERSION_NAME: ${{ steps.bump.outputs.version_name }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add packaging/android/build.gradle crates/horizon-client/src/android_main.rs
+          git commit -m "chore(android): bump public version to ${VERSION_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
       - name: Build public release APK
+        if: inputs.build_type == 'Public Builds'
         run: >-
           python tools/android_build.py
           --abi "${{ inputs.abi }}"
@@ -89,10 +188,29 @@ jobs:
           --java-home "$JAVA_HOME"
           --gradle "$(command -v gradle)"
 
-      - name: Upload APK
+      - name: Build development APK
+        if: inputs.build_type == 'Dev Builds'
+        run: >-
+          python tools/android_build.py
+          --abi "${{ inputs.abi }}"
+          --sdk "$ANDROID_HOME"
+          --java-home "$JAVA_HOME"
+          --gradle "$(command -v gradle)"
+
+      - name: Upload public APK
+        if: inputs.build_type == 'Public Builds'
         uses: actions/upload-artifact@v4
         with:
-          name: horizon-android-${{ inputs.abi }}-apk
+          name: horizon-android-public-${{ inputs.abi }}-apk
           path: .local/android/apk/${{ inputs.abi }}/horizon-android-public.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload development APK
+        if: inputs.build_type == 'Dev Builds'
+        uses: actions/upload-artifact@v4
+        with:
+          name: horizon-android-dev-${{ inputs.abi }}-apk
+          path: .local/android/apk/${{ inputs.abi }}/horizon-android.apk
           if-no-files-found: error
           retention-days: 14
