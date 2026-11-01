@@ -13750,6 +13750,13 @@ impl Game<'_> {
         };
         self.locator_camera =
             (!title).then_some((camera.to_array(), view_yaw, view_pitch, fov_degrees));
+        // Load or switch the selected shader before computing the camera pose, so the
+        // effective View Bobbing option changes on this same frame.
+        let pack_inputs = if title {
+            Default::default()
+        } else {
+            self.shader_pack_inputs(camera, alpha as f32)
+        };
         let bob = if title {
             glam::Mat4::IDENTITY
         } else {
@@ -13843,11 +13850,6 @@ impl Game<'_> {
         } else {
             self.gather_dynamic_lights(camera, alpha);
         }
-        let pack_inputs = if title {
-            Default::default()
-        } else {
-            self.shader_pack_inputs(camera, alpha as f32)
-        };
         // Map textures and font glyphs changed while building this frame's
         // geometry (game/maps.rs, world text) upload with this batch; draining
         // map_patches any earlier leaves them a frame behind.

@@ -155,7 +155,14 @@ impl Game<'_> {
             )),
         };
         let tilt = self.settings.file.double("damageTiltStrength");
-        glam::Mat4::from_cols_array(&bob_matrix(&state, tilt, self.settings.view_bobbing).m)
+        // Both classic and Horizon-native shader packs expect a stable camera. Keep the
+        // player's saved option intact, but force its effective value off while a pack draws.
+        let shader_active = self
+            .renderer
+            .as_ref()
+            .is_some_and(|renderer| renderer.has_active_shader_pack());
+        let view_bobbing = self.settings.view_bobbing && !shader_active;
+        glam::Mat4::from_cols_array(&bob_matrix(&state, tilt, view_bobbing).m)
     }
     /// `AbstractClientPlayer.tick` and `aiStep` (`ClientAvatarState.tick`,
     /// `updateBob`), `rideTick`'s `resetBob` and `LocalPlayer.move`'s walked

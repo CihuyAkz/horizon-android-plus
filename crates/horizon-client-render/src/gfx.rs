@@ -4139,6 +4139,14 @@ impl Renderer {
             .map(pack_timing::PassTiming::medians)
             .unwrap_or_default()
     }
+    /// Whether either kind of shader pack currently draws a stage or pass.
+    pub fn has_active_shader_pack(&self) -> bool {
+        self.pack_post
+            .as_ref()
+            .is_some_and(|(_, post)| post.as_ref().is_some_and(|post| post.draws()))
+            || self.native.as_ref().is_some_and(|pack| pack.draws())
+    }
+
     /// The dimension the shader pack was last set for.
     pub fn shader_pack_dimension(&self) -> Option<i32> {
         self.pack_post.as_ref().map(|p| p.0)
