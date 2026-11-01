@@ -39,6 +39,13 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}/.local/ci-target
       HORIZON_TELEMETRY_URL: "off"
     steps:
+      - name: Prevent Dev version downgrade on workflow re-runs
+        if: ${{ inputs.build_type == 'Dev Builds' && github.run_attempt > 1 }}
+        shell: bash
+        run: |
+          echo "::error::Re-running an old Dev workflow keeps the same run number and could produce a lower version. Start a new workflow run instead."
+          exit 1
+
       - name: Checkout source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
