@@ -5,7 +5,24 @@ is the guide for pack authors. The design and the pack format are in [api/shader
 signature, input, resource and limit is in the generated [api/shaders-reference.md](api/shaders-reference.md).
 
 Shader packs in the Iris/OptiFine format are a separate feature with its own loader; this page is only about
-Horizon's own format.
+Horizon's own format. Horizon does not load the Iris or Oculus mod binaries (those are Minecraft Java mod loaders);
+it reads compatible `shaders/` shaderpack files through its own renderer.
+
+### Iris/OptiFine shaderpack compatibility
+
+The classic shaderpack loader supports the `shaders/` ZIP/folder layout, GLSL preprocessing and translation,
+`shaders.properties` options, the prepare/deferred/composite/final passes, supported gbuffers and shadow passes,
+colortex buffers, and common built-in samplers. Iris-style PNG texture directives are also supported for the
+implemented stages: `texture.<stage>.<sampler>` with `prepare`, `gbuffers`, `deferred`, `composite`, or
+`shadowcomp`, pack-wide `customTexture.<sampler>` PNGs, plus `texture.noise`. A stage-specific texture replaces
+the sampler with the same name for that stage and takes precedence over a pack-wide texture; `texture.composite`
+also applies to `final`, and `texture.gbuffers` applies to gbuffers and shadow programs.
+
+This is format compatibility, not a claim of full Iris/Oculus parity. Raw custom textures, storage images, custom
+resource-pack core shaders, and shader stages that Horizon's renderer does not implement (including geometry,
+tessellation and compute programs) are not supported yet. When a pack requests several of these unsupported features,
+the loader adds notes for the affected directives or stage files instead of silently pretending they ran. Unsupported
+features should be treated as a compatibility limit rather than as an error in the shaderpack itself.
 
 | Part | Where | State |
 |---|---|---|

@@ -197,6 +197,15 @@ const GROUPS: [(Group, &str); 4] = [
     (Group::Final, "final"),
 ];
 
+/// A PNG texture declared by Iris' `texture.<stage>.<sampler>` directive.
+#[derive(Clone, Debug)]
+pub struct CustomTexture {
+    /// The GLSL sampler name this texture replaces for the program's stage.
+    pub sampler: String,
+    /// The original PNG bytes; the renderer decodes and uploads them.
+    pub bytes: Vec<u8>,
+}
+
 pub struct PostProgram {
     /// The program's name (`composite3`).
     pub name: String,
@@ -211,6 +220,8 @@ pub struct PostProgram {
     /// Bit n: `colortex<n>MipmapEnabled` in its fragment stage, so buffer n's mip chain is
     /// regenerated right before it (6.1.7; not for gbuffers programs).
     pub mipmaps: u16,
+    /// Stage-specific PNG textures from `texture.<stage>.<sampler>` (Iris format).
+    pub custom_textures: Vec<CustomTexture>,
 }
 
 pub struct Post {
@@ -263,6 +274,8 @@ pub struct Post {
     pub translucent_late: bool,
     /// Particles draw after deferred (`particles.ordering`, `particles.before.deferred`, 3.2).
     pub particles_late: bool,
+    /// Optional `texture.noise` PNG replacing Iris' built-in noise texture.
+    pub noise_texture: Option<Vec<u8>>,
     /// The custom uniforms of `shaders.properties` (3.4).
     pub custom: Custom,
     pub config: Config,
@@ -307,6 +320,10 @@ pub fn load_post(
     macros: &Macros,
     inputs: &GameInputs,
 ) -> Post {
+    let noise_texture = match properties.get("texture.noise") {
+        Some(path) if path.split_whitespace().count() == 1 => pack.read(path),
+        _ => None,
+    };
     let mut post = Post {
         folder: folder.to_owned(),
         programs: Vec::new(),
@@ -333,10 +350,33 @@ pub fn load_post(
         shadow_comp: Vec::new(),
         translucent_late: false,
         particles_late: false,
+        noise_texture,
         custom: Custom::parse(properties),
         config: Config::default(),
         notes: Vec::new(),
     };
+    if let Some(path) = properties.get("texture.noise") {
+        if path.split_whitespace().count() != 1 {
+            post.notes.push("texture.noise: raw texture definitions are not supported; using generated noise".into());
+        } else if post.noise_texture.is_none() {
+            post.notes.push(format!("texture.noise: `{path}` could not be read; using generated noise"));
+        }
+    }
+    for stage in ["setup", "begin"] {
+        if properties.entries.iter().any(|entry| entry.key.starts_with(&format!("texture.{stage}."))) {
+            post.notes.push(format!("texture.{stage}: this pass stage is not implemented; its custom textures are ignored"));
+        }
+    }
+    if properties.entries.iter().any(|entry| entry.key.starts_with("image.")) {
+        post.notes.push("image.* storage-image directives are not supported by this renderer yet".into());
+    }
+    for file in pack.list(folder) {
+        if [".csh", ".tcs", ".tes"].iter().any(|extension| file.ends_with(extension)) {
+            post.notes.push(format!(
+                "{file}: compute/tessellation shader stages are not supported yet; skipped"
+            ));
+        }
+    }
     let mut loader = Loader {
         pack,
         folder,
@@ -627,6 +667,12 @@ impl Loader<'_> {
             ));
             return None;
         }
+        if self.pack.exists(&path("tcs")) || self.pack.exists(&path("tes")) {
+            notes.push(format!(
+                "{name}: uses tessellation stages (not supported); skipped"
+            ));
+            return None;
+        }
         let vertex = preprocess(self.pack, &vsh, self.macros);
         let fragment = preprocess(self.pack, &fsh, self.macros);
         let problems: Vec<String> = [&vertex, &fragment]
@@ -671,6 +717,7 @@ impl Loader<'_> {
                     .fold(0, |m, (i, _)| m | 1 << i)
             }
         };
+        let custom_textures = self.custom_textures(group, &name);
         Some(PostProgram {
             flips: flips(self.properties, &name),
             name,
@@ -679,7 +726,62 @@ impl Loader<'_> {
             buffers,
             blend: None,
             mipmaps,
+            custom_textures,
         })
+    }
+
+    /// Reads the PNG textures declared for this Iris shader stage. `gbuffers` also applies to
+    /// shadow programs, and `composite` applies to both composite and final.
+    fn custom_textures(&mut self, group: Group, program: &str) -> Vec<CustomTexture> {
+        let stage = match group {
+            Group::Prepare => "prepare",
+            Group::Deferred => "deferred",
+            Group::Composite | Group::Final => "composite",
+            Group::ShadowComp => "shadowcomp",
+            Group::Gbuffers | Group::Translucent | Group::Shadow => "gbuffers",
+        };
+        let prefix = format!("texture.{stage}.");
+        let mut seen = BTreeSet::new();
+        let mut directives: Vec<(String, String)> = self
+            .properties
+            .entries
+            .iter()
+            .filter_map(|entry| {
+                let name = entry.key.strip_prefix(&prefix)?;
+                let sampler = name.split('.').next()?.trim();
+                if sampler.is_empty() || !seen.insert(sampler.to_owned()) {
+                    return None;
+                }
+                Some((sampler.to_owned(), entry.value.clone()))
+            })
+            .collect();
+        // Iris' `customTexture.<sampler>` declarations are pack-wide; a stage-specific
+        // `texture.<stage>.<sampler>` directive above takes precedence when both are present.
+        directives.extend(self.properties.entries.iter().filter_map(|entry| {
+            let sampler = entry.key.strip_prefix("customTexture.")?;
+            if sampler.is_empty() || !seen.insert(sampler.to_owned()) {
+                return None;
+            }
+            Some((sampler.to_owned(), entry.value.clone()))
+        }));
+        let mut textures = Vec::new();
+        for (sampler, path) in directives {
+            if path.split_whitespace().count() != 1 {
+                self.post.notes.push(format!(
+                    "{}: custom texture `{sampler}` uses a raw definition, which is not supported",
+                    program
+                ));
+                continue;
+            }
+            match self.pack.read(&path) {
+                Some(bytes) => textures.push(CustomTexture { sampler, bytes }),
+                None => self.post.notes.push(format!(
+                    "{}: custom texture `{sampler}`: `{path}` could not be read",
+                    program
+                )),
+            }
+        }
+        textures
     }
 }
 
@@ -849,6 +951,51 @@ mod tests {
         assert_eq!(names, ["final"]);
         let post = load_post(&pack, "", &properties, &macros, &GameInputs::default());
         assert!(post.programs.iter().any(|p| p.name == "composite3"));
+    }
+
+    #[test]
+    fn iris_stage_textures_and_custom_noise_are_loaded_from_the_pack() {
+        let sampler = "#version 120\nuniform sampler2D lookupTex;\nvarying vec2 uv;\n\
+                      void main() { gl_FragColor = texture2D(lookupTex, uv); }\n";
+        let global_sampler = "#version 120\nuniform sampler2D globalTex;\nvarying vec2 uv;\n\
+                             void main() { gl_FragColor = texture2D(globalTex, uv); }\n";
+        let pack = Pack::from_zip_bytes(
+            "textures",
+            zip(&[
+                ("shaders/composite.vsh", VSH),
+                ("shaders/composite.fsh", sampler),
+                ("shaders/final.vsh", VSH),
+                ("shaders/final.fsh", sampler),
+                ("shaders/deferred.vsh", VSH),
+                ("shaders/deferred.fsh", global_sampler),
+                ("shaders/lookup.png", "custom image"),
+                ("shaders/global.png", "global image"),
+                ("shaders/noise.png", "noise image"),
+            ]),
+        )
+        .unwrap();
+        let properties = Properties::parse(
+            "texture.composite.lookupTex=lookup.png\ncustomTexture.lookupTex=global.png\ncustomTexture.globalTex=global.png\ntexture.noise=noise.png\n",
+            &Macros::default(),
+        );
+        let post = load_post(
+            &pack,
+            "",
+            &properties,
+            &Macros::standard(),
+            &GameInputs::default(),
+        );
+        assert_eq!(post.noise_texture.as_deref(), Some(&b"noise image"[..]));
+        let composite = post.programs.iter().find(|p| p.name == "composite").unwrap();
+        let final_pass = post.programs.iter().find(|p| p.name == "final").unwrap();
+        let deferred = post.programs.iter().find(|p| p.name == "deferred").unwrap();
+        assert_eq!(composite.custom_textures.len(), 1);
+        assert_eq!(composite.custom_textures[0].sampler, "lookupTex");
+        assert_eq!(composite.custom_textures[0].bytes.as_slice(), &b"custom image"[..]);
+        assert_eq!(final_pass.custom_textures.len(), 1);
+        assert_eq!(deferred.custom_textures.len(), 1);
+        assert_eq!(deferred.custom_textures[0].sampler, "globalTex");
+        assert!(post.notes.is_empty(), "{:?}", post.notes);
     }
 
     /// The shadow pass runs when a program reads a shadow buffer or `shadow.enabled` says so;

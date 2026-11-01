@@ -30,7 +30,9 @@ enum Source {
     /// `depthtex1`/`depthtex2`: depth without translucent terrain (a copy taken before it).
     Depth1,
     Noise,
-    /// A 1×1 stand-in for names this slice does not provide yet (custom textures...).
+    /// A PNG declared by `texture.<stage>.<sampler>` in shaders.properties.
+    Custom(usize),
+    /// A 1×1 stand-in for names this slice does not provide yet.
     Dummy,
     /// A 1×1 depth of 1.0 behind a comparison sampler, until shadow maps exist: no shadow.
     Shadow,
@@ -67,7 +69,12 @@ enum SamplerKind {
 impl SamplerKind {
     fn of(source: Source, filtering: bool) -> Self {
         match source {
-            Source::Color(_) | Source::ShadowColor(_) | Source::Dummy if !filtering => {
+            Source::Color(_)
+            | Source::ShadowColor(_)
+            | Source::Custom(_)
+            | Source::Dummy
+                if !filtering =>
+            {
                 Self::Nearest
             }
             Source::Depth | Source::Depth1 | Source::ShadowDepth(_, false) => Self::Nearest,
@@ -75,9 +82,11 @@ impl SamplerKind {
             Source::Shadow | Source::ShadowDepth(_, true) => Self::Comparison,
             // Blocks look as the game draws them: nearest texels.
             Source::Atlas => Self::NearestRepeat,
-            Source::Color(_) | Source::ShadowColor(_) | Source::Dummy | Source::Lightmap => {
-                Self::Linear
-            }
+            Source::Color(_)
+            | Source::ShadowColor(_)
+            | Source::Custom(_)
+            | Source::Dummy
+            | Source::Lightmap => Self::Linear,
         }
     }
 
@@ -187,6 +196,8 @@ struct Pass {
     draw: bool,
     /// What `texture` reads instead of the block atlas.
     atlas: Option<wgpu::TextureView>,
+    /// PNG textures declared by the pack for this pass.
+    custom_textures: Vec<wgpu::TextureView>,
     /// Reads `mc_Entity`'s table (`PackPost::block_ids`).
     ids: bool,
     /// Bind groups by the sides read (bits 0–15), the buffers whose mip chain is current (bits
@@ -409,6 +420,63 @@ fn source(name: &str, shadow_space: bool, shadow_pass: bool, watershadow: bool) 
         "lightmap" => Source::Lightmap,
         n => horizon_shaders::buffer_index(n).map_or(Source::Dummy, Source::Color),
     }
+}
+
+/// Decodes a pack PNG to RGBA and uploads it as a filterable 2D texture.
+fn png_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    label: &str,
+    bytes: &[u8],
+) -> Result<wgpu::TextureView, String> {
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = decoder.read_info().map_err(|e| e.to_string())?;
+    let mut data = vec![0; reader.output_buffer_size().ok_or("image is too large")?];
+    let info = reader.next_frame(&mut data).map_err(|e| e.to_string())?;
+    if info.width == 0
+        || info.height == 0
+        || u64::from(info.width) * u64::from(info.height) > 16_777_216
+    {
+        return Err("image dimensions are invalid or exceed 16 megapixels".into());
+    }
+    let channels = info.color_type.samples() as usize;
+    let mut rgba = Vec::with_capacity(info.width as usize * info.height as usize * 4);
+    for pixel in data[..info.buffer_size()].chunks_exact(channels) {
+        rgba.extend(match channels {
+            4 => [pixel[0], pixel[1], pixel[2], pixel[3]],
+            3 => [pixel[0], pixel[1], pixel[2], 255],
+            2 => [pixel[0], pixel[0], pixel[0], pixel[1]],
+            1 => [pixel[0], pixel[0], pixel[0], 255],
+            _ => return Err("unsupported PNG pixel format".into()),
+        });
+    }
+    let size = wgpu::Extent3d {
+        width: info.width,
+        height: info.height,
+        depth_or_array_layers: 1,
+    };
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        tex.as_image_copy(),
+        &rgba,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(info.width * 4),
+            rows_per_image: Some(info.height),
+        },
+        size,
+    );
+    Ok(tex.create_view(&Default::default()))
 }
 
 /// 256×256 RGB white noise (6.4), from a fixed seed so every run looks the same.
@@ -703,6 +771,7 @@ fn build_pass(
     notes: &mut Vec<String>,
     geometry: Option<&Geometry<'_>>,
     custom: &[String],
+    custom_texture_views: &[wgpu::TextureView],
     draws: &wgpu::BindGroupLayout,
 ) -> Option<Pass> {
     let features = device.features();
@@ -736,7 +805,14 @@ fn build_pass(
         None => 0,
     };
     for s in &interface.samplers {
-        let mut src = source(&s.name, p.group.shadow(), shadow.is_some(), watershadow);
+        let custom_texture = p
+            .custom_textures
+            .iter()
+            .position(|texture| texture.sampler == s.name);
+        let mut src = custom_texture.map_or_else(
+            || source(&s.name, p.group.shadow(), shadow.is_some(), watershadow),
+            Source::Custom,
+        );
         let blank = match src {
             // The shadow pass writes the shadow map.
             Source::ShadowDepth(..) => p.group == Group::Shadow,
@@ -759,7 +835,7 @@ fn build_pass(
                 wgpu::TextureSampleType::Float { filterable: false }
             }
             // Unfilterable on WebGPU-level devices; the lightmap is sampled at texel centres.
-            Source::Lightmap => float,
+            Source::Lightmap | Source::Custom(_) => float,
             _ => float,
         };
         let int = !matches!(sample_type, wgpu::TextureSampleType::Float { .. });
@@ -959,6 +1035,7 @@ fn build_pass(
         mipmaps: p.mipmaps,
         draw,
         atlas: geometry.and_then(|g| g.atlas.clone()),
+        custom_textures: custom_texture_views.to_vec(),
         ids: geometry.is_some_and(|g| g.ids.is_some()),
         groups: HashMap::new(),
     })
@@ -974,6 +1051,25 @@ impl PackPost {
         world: World<'_>,
     ) -> Self {
         let features = device.features();
+        let noise_data = post.noise_texture;
+        let mut notes = post.notes;
+        let noise = match noise_data {
+            Some(bytes) => match png_texture(
+                device,
+                queue,
+                "Shader pack custom noisetex",
+                &bytes,
+            ) {
+                Ok(view) => view,
+                Err(error) => {
+                    notes.push(format!(
+                        "texture.noise could not be decoded: {error}; using generated noise"
+                    ));
+                    noise(device, queue)
+                }
+            },
+            None => noise(device, queue),
+        };
         let formats: [wgpu::TextureFormat; BUFFERS] =
             std::array::from_fn(|i| texture_format(post.config.buffers[i].format, features));
         let clears = std::array::from_fn(|i| {
@@ -983,7 +1079,6 @@ impl PackPost {
                     .unwrap_or(if i == 1 { [1.0; 4] } else { [0.0; 4] })
             })
         });
-        let mut notes = post.notes;
         notes.extend(post.config.notes);
         let shadow_config = post.config.shadow.clone();
         let mut custom = post.custom;
@@ -1009,6 +1104,23 @@ impl PackPost {
                 .map_or(formats[i], |f| f[i])
         });
         let mut build = |p: horizon_shaders::PostProgram, geometry: Option<&Geometry<'_>>| {
+            let mut custom_texture_views = Vec::with_capacity(p.custom_textures.len());
+            for texture_data in &p.custom_textures {
+                let label = format!(
+                    "Shader pack {} custom texture {}",
+                    p.name, texture_data.sampler
+                );
+                match png_texture(device, queue, &label, &texture_data.bytes) {
+                    Ok(view) => custom_texture_views.push(view),
+                    Err(error) => {
+                        notes.push(format!(
+                            "{}: custom texture `{}` could not be loaded: {error}; using white fallback",
+                            p.name, texture_data.sampler
+                        ));
+                        custom_texture_views.push(texture(device, queue, "Shader pack invalid custom texture", 1, &[255; 4]));
+                    }
+                }
+            }
             let in_shadow = p.group.shadow();
             let pass = build_pass(
                 device,
@@ -1019,6 +1131,7 @@ impl PackPost {
                 &mut notes,
                 geometry,
                 &custom_names,
+                &custom_texture_views,
                 &draws.layout,
             )?;
             if !in_shadow {
@@ -1447,7 +1560,7 @@ impl PackPost {
             blit_group: None,
             main: 0,
             targets: None,
-            noise: noise(device, queue),
+            noise,
             dummy: texture(device, queue, "Shader pack stand-in", 1, &white),
             shadow: (
                 device
@@ -1589,6 +1702,7 @@ impl PackPost {
                         _ => &targets.depth,
                     },
                     Source::Noise => &self.noise,
+                    Source::Custom(i) => pass.custom_textures.get(i).unwrap_or(&self.dummy),
                     Source::Dummy => &self.dummy,
                     Source::Shadow => &self.shadow.0,
                     Source::Atlas => pass
