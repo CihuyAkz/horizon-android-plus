@@ -258,21 +258,12 @@ jobs:
           )
           PY
 
-      - name: Restore stable Dev signing key
+      - name: Restore stable Dev signing key from GitHub Actions cache
         if: inputs.build_type == 'Dev Builds'
-        env:
-          DEV_KEYSTORE_BASE64: ${{ secrets.DEV_KEYSTORE_BASE64 }}
-        shell: bash
-        run: |
-          if [[ -z "$DEV_KEYSTORE_BASE64" ]]; then
-            echo "::error::Missing DEV_KEYSTORE_BASE64 repository secret. Add the persistent Dev keystore as a base64 secret before building Dev APKs."
-            exit 1
-          fi
-
-          mkdir -p .local/android
-          printf '%s' "$DEV_KEYSTORE_BASE64" | base64 --decode > .local/android/debug.keystore
-          keytool -list -keystore .local/android/debug.keystore \
-            -storepass android -alias androiddebugkey >/dev/null
+        uses: actions/cache@v4
+        with:
+          path: .local/android/debug.keystore
+          key: horizon-dev-signing-${{ github.repository_id }}
 
       - name: Build development APK
         if: inputs.build_type == 'Dev Builds'
