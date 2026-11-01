@@ -16,11 +16,13 @@ REPLACE THESE TWO FILES IN YOUR REPOSITORY:
    - Makes the bundled HTML/WebView the only visible and interactive launcher UI.
    - Disables the old Rust-drawn launcher menu and its menu input handling.
    - Keeps the native Rust backend and command bridge for install, account status/sign-in, Android file picker, settings, and game launch/return.
+   - Fixes the GitHub Actions Rust compilation errors at lines 324 and 334 by removing ambiguous `map_err(Into::into)` conversions and using `?` directly.
 
 The rest of the repository is not included or changed by this ZIP.
 
 VALIDATION
-- The HTML inline JavaScript passed `node --check`.
-- Rust formatting/build was not run because the Rust toolchain is unavailable in the preparation environment.
+- The original HTML inline JavaScript passed `node --check`; the HTML file is unchanged in this correction.
+- The two Rust expressions now use direct error propagation so the function return type determines the conversion.
+- A Rust build could not be run in the preparation environment because `cargo` is unavailable. GitHub Actions must verify the full Android build.
 
 After replacing the two files, commit them and run the Android build workflow. Keep the paths exactly as shown above.
