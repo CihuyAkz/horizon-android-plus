@@ -903,17 +903,7 @@ function aboutPage(){
 function doAction(el){
  const action=el.dataset.action;
  switch(action){
-  case 'launch':{
-    const account=state.nativeStatus?.account||{};
-    const hasAccount=!!String(account.profile||account.offlineName||'').trim();
-    if(!hasAccount){
-     openModal('Account required','Add or sign in to a player account before launching the game.','<div class="notice">No player account is selected. Open Accounts, sign in with Microsoft or set an offline player name, then try again.</div>','<button class="btn" data-action="close-modal">Close</button><button class="btn primary" data-action="go-accounts">Open Accounts</button>');
-     break;
-    }
-    if(!state.nativeStatus?.installed){toast('Install the game before launching.');break;}
-    if(nativeCommand(1,''))toast('Native launch request sent.');
-    break;
-   }
+  case 'launch':if(nativeCommand(1,''))toast('Native launch request sent.');break;
    case 'go-accounts':closeModal();navigate('accounts');break;
    case 'download-page':{
     jumpDownloadPage(el.dataset.category,el.dataset.page);
