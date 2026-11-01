@@ -1,7 +1,21 @@
-Apply this patch at the repository root (branch: android).
+Horizon-Android-Plus — CI compile fix
+Target branch: android
+Target commit inspected: 5625feb094ba2acf6cfadd40937567b5b149e253
 
-Extract this ZIP directly into the repository root and allow the 7 listed files to be overwritten. The paths in this archive are already relative to the repository root.
+Apply this archive at the repository root, preserving the directory structure and allowing the three files to be overwritten.
 
-The patch includes: the HTML asset, Android WebView Activity/JavaScript bridge, Gradle asset source path, and Rust JNI/UI command + status integration.
+Included files:
+- crates/horizon-client/src/content_files.rs
+  Adds the missing check_and_convert_classic_shader helper and focused Rust tests.
+- crates/horizon-client/src/android/login.rs
+  Adds the missing Login::message() accessor used by launcher.rs.
+- crates/horizon-client/src/android/launcher.rs
+  Makes the two String-to-error conversions explicit to resolve E0282/E0283.
 
-Do not replace only the HTML file: the Activity, Gradle asset source set and Rust bridge are all required for the HTML launcher to appear and work.
+No GitHub Actions workflow files or unrelated settings are changed.
+
+Validation performed here:
+- Python shader-converter tests: 3 passed.
+- ZIP integrity: checked.
+
+The Android Rust release build was not run in this environment because rustc/cargo are not installed. Re-run the GitHub Actions job after applying the files to confirm the full build.

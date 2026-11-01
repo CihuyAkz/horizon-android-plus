@@ -50,6 +50,9 @@ impl Login {
     pub fn pending(&self) -> bool {
         self.task.is_some()
     }
+    pub fn message(&self) -> &str {
+        &self.message
+    }
     pub fn hide(&mut self) {
         self.visible = false;
     }

@@ -320,7 +320,7 @@ impl Launcher {
             }
             _ => return Err("Unsupported Android setting".into()),
         }
-        self.catalog.config.save(&self.home).map_err(Into::into)?;
+        self.catalog.config.save(&self.home).map_err(std::io::Error::other)?;
         if orientation_changed {
             crate::platform::set_orientation(self.catalog.config.orientation);
         }
@@ -330,7 +330,7 @@ impl Launcher {
         if scale_changed {
             crate::display::set_scale(self.catalog.config.render_scale);
             if let (Some(window), Some(renderer)) = (&self.window, &mut self.renderer) {
-                crate::display::apply(window, renderer).map_err(Into::into)?;
+                crate::display::apply(window, renderer).map_err(std::io::Error::other)?;
                 window.request_redraw();
             }
         }

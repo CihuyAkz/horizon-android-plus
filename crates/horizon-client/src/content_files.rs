@@ -174,6 +174,69 @@ pub fn validate(
     }
     Ok(kind == Kind::Shaders && native_shader)
 }
+pub fn check_and_convert_classic_shader(destination: &Path) -> crate::Result<Option<bool>> {
+    const SOURCE: &[u8] = b"float cloudHeightM = isnan(cloudHeight) ? 192.0 : cloudHeight; // iris returns \"nan\" if there are no clouds";
+    const HORIZON: &[u8] = b"float cloudHeightM = (isnan(cloudHeight) || cloudHeight < 1.0) ? 192.0 : cloudHeight; // iris returns \"nan\" if there are no clouds; Horizon omits it as 0";
+    const MAX_COMMON: u64 = 8 << 20;
+
+    let path = destination.join("shaders/lib/common.glsl");
+    for directory in [destination.join("shaders"), destination.join("shaders/lib")] {
+        match fs::symlink_metadata(&directory) {
+            Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => {}
+            Ok(_) => return Err("Shader pack contains an unsafe common.glsl path".into()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err("Shader common.glsl is not a regular file".into());
+    }
+    if metadata.len() > MAX_COMMON {
+        return Err("Shader common.glsl is unexpectedly large".into());
+    }
+
+    let bytes = fs::read(&path)?;
+    let source_count = bytes.windows(SOURCE.len()).filter(|part| *part == SOURCE).count();
+    let horizon_count = bytes.windows(HORIZON.len()).filter(|part| *part == HORIZON).count();
+    if horizon_count == 1 && source_count == 0 {
+        return Ok(Some(false));
+    }
+    if source_count != 1 || horizon_count != 0 {
+        return Ok(None);
+    }
+
+    let start = bytes
+        .windows(SOURCE.len())
+        .position(|part| part == SOURCE)
+        .ok_or("Verified shader conversion pattern disappeared")?;
+    let mut converted = Vec::with_capacity(bytes.len() + HORIZON.len() - SOURCE.len());
+    converted.extend_from_slice(&bytes[..start]);
+    converted.extend_from_slice(HORIZON);
+    converted.extend_from_slice(&bytes[start + SOURCE.len()..]);
+
+    let temporary = destination.join(".horizon-common.glsl.tmp");
+    let result = (|| -> crate::Result<()> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        file.write_all(&converted)?;
+        file.sync_all()?;
+        fs::rename(&temporary, &path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result?;
+    Ok(Some(true))
+}
+
 pub fn extract_shader_archive(
     path: &Path,
     destination: &Path,
@@ -488,4 +551,54 @@ mod tests {
         assert!(!target.exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
+    #[test]
+    fn converts_only_the_verified_classic_shader_line() {
+        const SOURCE: &[u8] = b"float cloudHeightM = isnan(cloudHeight) ? 192.0 : cloudHeight; // iris returns \"nan\" if there are no clouds";
+        const HORIZON: &[u8] = b"float cloudHeightM = (isnan(cloudHeight) || cloudHeight < 1.0) ? 192.0 : cloudHeight; // iris returns \"nan\" if there are no clouds; Horizon omits it as 0";
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-shader-convert-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let common = dir.join("shaders/lib/common.glsl");
+        let other = dir.join("shaders/final.fsh");
+        fs::create_dir_all(common.parent().unwrap()).unwrap();
+        fs::create_dir_all(other.parent().unwrap()).unwrap();
+        let original = [b"before\n".as_slice(), SOURCE, b"\nafter\n"].concat();
+        fs::write(&common, &original).unwrap();
+        fs::write(&other, b"unchanged shader source\n").unwrap();
+
+        assert_eq!(check_and_convert_classic_shader(&dir).unwrap(), Some(true));
+        let converted = fs::read(&common).unwrap();
+        assert!(converted.windows(HORIZON.len()).any(|part| part == HORIZON));
+        assert!(!converted.windows(SOURCE.len()).any(|part| part == SOURCE));
+        assert_eq!(&converted[..7], b"before\n");
+        assert!(converted.ends_with(b"\nafter\n"));
+        assert_eq!(fs::read(&other).unwrap(), b"unchanged shader source\n");
+        assert_eq!(check_and_convert_classic_shader(&dir).unwrap(), Some(false));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn unsupported_classic_shader_is_left_unchanged() {
+        let dir = std::env::temp_dir().join(format!(
+            "horizon-shader-unsupported-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let common = dir.join("shaders/lib/common.glsl");
+        fs::create_dir_all(common.parent().unwrap()).unwrap();
+        fs::write(&common, b"float cloudHeightM = cloudHeight;\n").unwrap();
+        let before = fs::read(&common).unwrap();
+        assert_eq!(check_and_convert_classic_shader(&dir).unwrap(), None);
+        assert_eq!(fs::read(&common).unwrap(), before);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
 }
