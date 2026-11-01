@@ -1,5 +1,5 @@
-//! The post-processing programs of one dimension, ready for the renderer: `prepare`, `deferred`,
-//! `composite` and `final` with their numbered variants, in the order they run (spec 2.1), each
+//! The post-processing programs of one dimension, ready for the renderer: `begin`, `prepare`,
+//! `deferred`, `composite` and `final` with their numbered variants, in the order they run (spec 2.1), each
 //! preprocessed and translated, with the buffers it writes and the flips that follow it, and the
 //! buffer settings their files carry (6.1).
 //!
@@ -22,6 +22,8 @@ use crate::{
 /// Which group of 2.1 a program belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Group {
+    /// An Iris composite-style program that runs before the shadow pass.
+    Begin,
     Prepare,
     Deferred,
     Composite,
@@ -190,7 +192,8 @@ pub const CELESTIAL_BLEND: Blend = [
     Factor::OneMinusSrcAlpha,
 ];
 
-const GROUPS: [(Group, &str); 4] = [
+const GROUPS: [(Group, &str); 5] = [
+    (Group::Begin, "begin"),
     (Group::Prepare, "prepare"),
     (Group::Deferred, "deferred"),
     (Group::Composite, "composite"),
@@ -362,7 +365,7 @@ pub fn load_post(
             post.notes.push(format!("texture.noise: `{path}` could not be read; using generated noise"));
         }
     }
-    for stage in ["setup", "begin"] {
+    for stage in ["setup"] {
         if properties.entries.iter().any(|entry| entry.key.starts_with(&format!("texture.{stage}."))) {
             post.notes.push(format!("texture.{stage}: this pass stage is not implemented; its custom textures are ignored"));
         }
@@ -734,6 +737,7 @@ impl Loader<'_> {
     /// shadow programs, and `composite` applies to both composite and final.
     fn custom_textures(&mut self, group: Group, program: &str) -> Vec<CustomTexture> {
         let stage = match group {
+            Group::Begin => "begin",
             Group::Prepare => "prepare",
             Group::Deferred => "deferred",
             Group::Composite | Group::Final => "composite",
@@ -878,6 +882,8 @@ mod tests {
         let pack = Pack::from_zip_bytes(
             "t",
             zip(&[
+                ("shaders/begin.vsh", VSH),
+                ("shaders/begin.fsh", FSH),
                 ("shaders/composite.vsh", VSH),
                 ("shaders/composite.fsh", FSH),
                 ("shaders/composite2.vsh", VSH),
@@ -921,15 +927,16 @@ mod tests {
             &GameInputs::default(),
         );
         let names: Vec<&str> = post.programs.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(names, ["deferred", "composite", "composite2", "final"]);
+        assert_eq!(names, ["begin", "deferred", "composite", "composite2", "final"]);
         let p = &post.programs;
-        assert_eq!(p[0].buffers, (0..8).collect::<Vec<_>>());
-        assert_eq!((p[0].mipmaps, p[1].mipmaps), (1 << 5, 0));
-        assert_eq!(p[1].buffers, [3]);
-        assert_eq!(p[1].flips, [(3, false)]);
-        assert_eq!(p[2].flips, [(4, true)]);
+        assert_eq!(p[0].group, Group::Begin);
+        assert_eq!(p[1].buffers, (0..8).collect::<Vec<_>>());
+        assert_eq!((p[1].mipmaps, p[2].mipmaps), (1 << 5, 0));
+        assert_eq!(p[2].buffers, [3]);
+        assert_eq!(p[2].flips, [(3, false)]);
+        assert_eq!(p[3].flips, [(4, true)]);
         assert_eq!(post.composite_pre, [(1, true)]);
-        assert_eq!(p[3].group, Group::Final);
+        assert_eq!(p[4].group, Group::Final);
         let notes = post.notes.join("\n");
         assert!(
             notes.contains("composite4: uses a geometry stage"),
@@ -962,6 +969,8 @@ mod tests {
         let pack = Pack::from_zip_bytes(
             "textures",
             zip(&[
+                ("shaders/begin.vsh", VSH),
+                ("shaders/begin.fsh", sampler),
                 ("shaders/composite.vsh", VSH),
                 ("shaders/composite.fsh", sampler),
                 ("shaders/final.vsh", VSH),
@@ -969,13 +978,14 @@ mod tests {
                 ("shaders/deferred.vsh", VSH),
                 ("shaders/deferred.fsh", global_sampler),
                 ("shaders/lookup.png", "custom image"),
+                ("shaders/begin-lookup.png", "begin custom image"),
                 ("shaders/global.png", "global image"),
                 ("shaders/noise.png", "noise image"),
             ]),
         )
         .unwrap();
         let properties = Properties::parse(
-            "texture.composite.lookupTex=lookup.png\ncustomTexture.lookupTex=global.png\ncustomTexture.globalTex=global.png\ntexture.noise=noise.png\n",
+            "texture.begin.lookupTex=begin-lookup.png\ntexture.composite.lookupTex=lookup.png\ncustomTexture.lookupTex=global.png\ncustomTexture.globalTex=global.png\ntexture.noise=noise.png\n",
             &Macros::default(),
         );
         let post = load_post(
@@ -986,9 +996,13 @@ mod tests {
             &GameInputs::default(),
         );
         assert_eq!(post.noise_texture.as_deref(), Some(&b"noise image"[..]));
+        let begin = post.programs.iter().find(|p| p.name == "begin").unwrap();
         let composite = post.programs.iter().find(|p| p.name == "composite").unwrap();
         let final_pass = post.programs.iter().find(|p| p.name == "final").unwrap();
         let deferred = post.programs.iter().find(|p| p.name == "deferred").unwrap();
+        assert_eq!(begin.custom_textures.len(), 1);
+        assert_eq!(begin.custom_textures[0].sampler, "lookupTex");
+        assert_eq!(begin.custom_textures[0].bytes.as_slice(), &b"begin custom image"[..]);
         assert_eq!(composite.custom_textures.len(), 1);
         assert_eq!(composite.custom_textures[0].sampler, "lookupTex");
         assert_eq!(composite.custom_textures[0].bytes.as_slice(), &b"custom image"[..]);

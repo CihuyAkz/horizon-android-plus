@@ -938,9 +938,76 @@ document.addEventListener('submit',e=>{
   if(nativeCommand(8,value))toast('Offline player name update sent to Android.');
  }
 });
+const HORIZON_RELEASE_CACHE_KEY='horizon-public-release-cache-v1';
+const HORIZON_RELEASE_CACHE_TTL=30*60*1000;
+let horizonReleaseCheckStarted=false;
+function parseHorizonVersion(value){
+ const match=String(value||'').trim().replace(/^v/i,'').match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/);
+ if(!match)return null;
+ return {major:Number(match[1]),minor:Number(match[2]),patch:Number(match[3]),pre:match[4]||''};
+}
+function compareHorizonVersions(left,right){
+ const a=parseHorizonVersion(left),b=parseHorizonVersion(right);
+ if(!a||!b)return null;
+ for(const key of ['major','minor','patch'])if(a[key]!==b[key])return a[key]>b[key]?1:-1;
+ if(!a.pre&&!b.pre)return 0;
+ if(!a.pre)return 1;
+ if(!b.pre)return -1;
+ const aa=a.pre.split('.'),bb=b.pre.split('.');
+ for(let i=0;i<Math.max(aa.length,bb.length);i++){
+  if(aa[i]===undefined)return -1;
+  if(bb[i]===undefined)return 1;
+  if(aa[i]===bb[i])continue;
+  const an=/^\d+$/.test(aa[i]),bn=/^\d+$/.test(bb[i]);
+  if(an&&bn)return Number(aa[i])>Number(bb[i])?1:-1;
+  if(an!==bn)return an?-1:1;
+  return aa[i].localeCompare(bb[i]);
+ }
+ return 0;
+}
+function showHorizonReleaseUpdate(release,installedVersion){
+ if(!release||!release.version)return;
+ const comparison=compareHorizonVersions(release.version,installedVersion);
+ if(comparison===null||comparison<=0)return;
+ const notes=String(release.body||'').trim().slice(0,2400);
+ const releaseType=release.prerelease?'Pre-release':'Public release';
+ const body=`<div class="notice"><div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap"><strong>${escapeHtml(release.name||release.tag||'Horizon Android update')}</strong><span class="pill purple">${releaseType}</span></div><div class="home-status-row"><span>Installed version</span><strong>${escapeHtml(installedVersion)}</strong></div><div class="home-status-row"><span>Latest version</span><strong>${escapeHtml(release.version)}</strong></div>${notes?`<div class="divider"></div><strong>Release notes</strong><p style="white-space:pre-wrap;overflow-wrap:anywhere;margin:8px 0 0">${escapeHtml(notes)}</p>`:'<p style="margin:8px 0 0">A newer APK is available on GitHub.</p>'}</div>`;
+ const footer=`<button class="btn" data-action="close-modal">Later</button><a class="btn primary" href="${escapeAttr(release.url||'https://github.com/CihuyAkz/horizon-android-plus/releases')}">View release</a>`;
+ if(!state.modal)openModal('Update available','A newer Horizon Android build has been published.',body,footer);
+}
+window.onHorizonReleaseResult=function(payload){
+ let result=null;
+ try{result=JSON.parse(String(payload||'{}'));}catch(error){result=null;}
+ let cached=null;
+ try{cached=JSON.parse(localStorage.getItem(HORIZON_RELEASE_CACHE_KEY)||'null');}catch(error){}
+ if(result?.checked===true){
+  cached={checkedAt:Date.now(),release:result.release||null};
+  try{localStorage.setItem(HORIZON_RELEASE_CACHE_KEY,JSON.stringify(cached));}catch(error){}
+ }
+ const installedVersion=(()=>{try{return String(window.HorizonAndroid.appVersion()||'').trim();}catch(error){return '';}})();
+ if(!installedVersion)return;
+ const release=result?.release||cached?.release||null;
+ if(release)showHorizonReleaseUpdate(release,installedVersion);
+};
+function checkHorizonReleaseUpdate(){
+ if(horizonReleaseCheckStarted||!hasNativeBridge()||typeof window.HorizonAndroid.appVersion!=='function'||typeof window.HorizonAndroid.checkLatestRelease!=='function')return;
+ horizonReleaseCheckStarted=true;
+ let installedVersion='';
+ try{installedVersion=String(window.HorizonAndroid.appVersion()||'').trim();}catch(error){}
+ if(!installedVersion)return;
+ let cached=null;
+ try{cached=JSON.parse(localStorage.getItem(HORIZON_RELEASE_CACHE_KEY)||'null');}catch(error){}
+ if(cached?.checkedAt&&Date.now()-Number(cached.checkedAt)<HORIZON_RELEASE_CACHE_TTL){
+  if(cached.release)showHorizonReleaseUpdate(cached.release,installedVersion);
+  return;
+ }
+ try{window.HorizonAndroid.checkLatestRelease();}catch(error){console.debug('Horizon release check unavailable:',error);}
+}
+
 if(hasNativeBridge()){
  refreshNativeStatus();
  setInterval(refreshNativeStatus,900);
+ setTimeout(checkHorizonReleaseUpdate,1200);
 }
 
 render();

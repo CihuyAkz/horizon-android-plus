@@ -11,10 +11,11 @@ it reads compatible `shaders/` shaderpack files through its own renderer.
 ### Iris/OptiFine shaderpack compatibility
 
 The classic shaderpack loader supports the `shaders/` ZIP/folder layout, GLSL preprocessing and translation,
-`shaders.properties` options, the prepare/deferred/composite/final passes, supported gbuffers and shadow passes,
-colortex buffers, and common built-in samplers. Iris-style PNG texture directives are also supported for the
-implemented stages: `texture.<stage>.<sampler>` with `prepare`, `gbuffers`, `deferred`, `composite`, or
-`shadowcomp`, pack-wide `customTexture.<sampler>` PNGs, plus `texture.noise`. A stage-specific texture replaces
+`shaders.properties` options, the begin/prepare/deferred/composite/final passes, supported gbuffers and shadow
+passes, colortex buffers, and common built-in samplers. The Iris `begin` pass runs before Horizon's shadow pass.
+Iris-style PNG texture directives are also supported for the implemented stages: `texture.<stage>.<sampler>` with
+`begin`, `prepare`, `gbuffers`, `deferred`, `composite`, or `shadowcomp`, pack-wide `customTexture.<sampler>` PNGs,
+plus `texture.noise`. A stage-specific texture replaces
 the sampler with the same name for that stage and takes precedence over a pack-wide texture; `texture.composite`
 also applies to `final`, and `texture.gbuffers` applies to gbuffers and shadow programs.
 
