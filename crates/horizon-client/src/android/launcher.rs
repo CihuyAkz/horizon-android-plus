@@ -4,6 +4,7 @@ use crate::game;
 #[path = "login.rs"]
 mod login;
 thread_local! {static SESSION:std::cell::RefCell<Option<PathBuf>>=const{std::cell::RefCell::new(None)};}
+const HTML_LAUNCHER_ONLY: bool = true;
 static WEB_STATUS: std::sync::OnceLock<Mutex<String>> = std::sync::OnceLock::new();
 static WEB_STATUS_PUBLISHED_AT: std::sync::OnceLock<Mutex<Option<Instant>>> = std::sync::OnceLock::new();
 pub(super) fn web_status() -> String {
@@ -320,7 +321,7 @@ impl Launcher {
             }
             _ => return Err("Unsupported Android setting".into()),
         }
-        self.catalog.config.save(&self.home).map_err(std::io::Error::other)?;
+        self.catalog.config.save(&self.home).map_err(Into::into)?;
         if orientation_changed {
             crate::platform::set_orientation(self.catalog.config.orientation);
         }
@@ -330,7 +331,7 @@ impl Launcher {
         if scale_changed {
             crate::display::set_scale(self.catalog.config.render_scale);
             if let (Some(window), Some(renderer)) = (&self.window, &mut self.renderer) {
-                crate::display::apply(window, renderer).map_err(std::io::Error::other)?;
+                crate::display::apply(window, renderer).map_err(Into::into)?;
                 window.request_redraw();
             }
         }
@@ -528,6 +529,12 @@ impl Launcher {
             events.create_window(Window::default_attributes().with_title("Horizon Android"))?,
         );
         crate::display::prepare(&window)?;
+        if HTML_LAUNCHER_ONLY {
+            self.window = Some(window);
+            self.renderer = None;
+            self.gui = None;
+            return Ok(());
+        }
         ensure_launcher_assets(&self.home)?;
         let gui = game::UiResources {
             atlas: HudAtlas::build(&self.home.join("installer"))?,
@@ -717,6 +724,22 @@ impl ApplicationHandler for Launcher {
             self.restore_launcher(events);
             return;
         }
+        if HTML_LAUNCHER_ONLY {
+            match event {
+                WindowEvent::CloseRequested => events.exit(),
+                WindowEvent::Resized(size) => {
+                    if let Some(renderer) = &mut self.renderer {
+                        renderer.resize(size.width, size.height);
+                    }
+                }
+                WindowEvent::Focused(false) => {
+                    horizon_client::android_runtime::clear_gamepads();
+                    self.controller_repeat = None;
+                }
+                _ => {}
+            }
+            return;
+        }
         let result = match event {
             WindowEvent::CloseRequested => {
                 if self.login.visible || self.login.pending() {
@@ -828,9 +851,11 @@ impl ApplicationHandler for Launcher {
             if self.game.is_none() { self.publish_web_status(); }
             return;
         }
-        crate::platform::poll_gamepad_connections();
-        if let Err(error) = self.controller_frame(events) {
-            self.fail(error);
+        if !HTML_LAUNCHER_ONLY {
+            crate::platform::poll_gamepad_connections();
+            if let Err(error) = self.controller_frame(events) {
+                self.fail(error);
+            }
         }
         if let (Some(window), Some(renderer)) = (&self.window, &mut self.renderer)
             && let Err(error) = crate::display::apply(window, renderer)
@@ -880,8 +905,10 @@ impl ApplicationHandler for Launcher {
         }
 
         self.handle_web_commands(events);
-        if let Some(window) = &self.window {
-            window.request_redraw();
+        if !HTML_LAUNCHER_ONLY {
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
         }
         events.set_control_flow(ControlFlow::WaitUntil(
             Instant::now() + Duration::from_millis(100),

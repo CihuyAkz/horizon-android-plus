@@ -1,21 +1,26 @@
-Horizon-Android-Plus — CI compile fix
-Target branch: android
-Target commit inspected: 5625feb094ba2acf6cfadd40937567b5b149e253
+HORIZON ANDROID PLUS — HTML LAUNCHER FIX
 
-Apply this archive at the repository root, preserving the directory structure and allowing the three files to be overwritten.
+This ZIP contains complete replacement files. It does not modify GitHub automatically.
 
-Included files:
-- crates/horizon-client/src/content_files.rs
-  Adds the missing check_and_convert_classic_shader helper and focused Rust tests.
-- crates/horizon-client/src/android/login.rs
-  Adds the missing Login::message() accessor used by launcher.rs.
-- crates/horizon-client/src/android/launcher.rs
-  Makes the two String-to-error conversions explicit to resolve E0282/E0283.
+REPLACE THESE TWO FILES IN YOUR REPOSITORY:
 
-No GitHub Actions workflow files or unrelated settings are changed.
+1) packaging/android/assets/Horizon-Android-Plus.html
+   Fixes:
+   - Modrinth popular projects load when Downloads is opened, even with an empty search.
+   - Switching Resource Pack / Shader categories triggers a fresh catalog search.
+   - Modrinth version metadata is fetched in one batch so the selected file URL and exact size are available.
+   - File size is shown in bytes, not MB.
+   - The HTML hamburger drawer stays open during page/status re-renders.
 
-Validation performed here:
-- Python shader-converter tests: 3 passed.
-- ZIP integrity: checked.
+2) crates/horizon-client/src/android/launcher.rs
+   - Makes the bundled HTML/WebView the only visible and interactive launcher UI.
+   - Disables the old Rust-drawn launcher menu and its menu input handling.
+   - Keeps the native Rust backend and command bridge for install, account status/sign-in, Android file picker, settings, and game launch/return.
 
-The Android Rust release build was not run in this environment because rustc/cargo are not installed. Re-run the GitHub Actions job after applying the files to confirm the full build.
+The rest of the repository is not included or changed by this ZIP.
+
+VALIDATION
+- The HTML inline JavaScript passed `node --check`.
+- Rust formatting/build was not run because the Rust toolchain is unavailable in the preparation environment.
+
+After replacing the two files, commit them and run the Android build workflow. Keep the paths exactly as shown above.
