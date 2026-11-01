@@ -188,6 +188,92 @@ jobs:
           --java-home "$JAVA_HOME"
           --gradle "$(command -v gradle)"
 
+      - name: Prepare temporary development version
+        if: inputs.build_type == 'Dev Builds'
+        env:
+          DEV_BUILD_NUMBER: ${{ github.run_number }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          build_number = int(os.environ["DEV_BUILD_NUMBER"])
+          gradle_path = Path("packaging/android/build.gradle")
+          rust_path = Path("crates/horizon-client/src/android_main.rs")
+          gradle = gradle_path.read_text(encoding="utf-8")
+          rust = rust_path.read_text(encoding="utf-8")
+
+          code_pattern = re.compile(r"(?m)^([ \t]*versionCode[ \t]+)(\d+)([ \t]*(?://.*)?$)")
+          name_pattern = re.compile(
+              r"(?m)^([ \t]*versionName[ \t]+)(['\"])(\d+\.\d+\.\d+)\2([ \t]*(?://.*)?$)"
+          )
+          suffix_pattern = re.compile(r"(?m)^([ \t]*versionNameSuffix[ \t]+).*$")
+
+          code_match = code_pattern.search(gradle)
+          name_match = name_pattern.search(gradle)
+          suffix_match = suffix_pattern.search(gradle)
+          if code_match is None or name_match is None or suffix_match is None:
+              raise SystemExit("Could not find versionCode, versionName, and versionNameSuffix in build.gradle")
+
+          old_code = int(code_match.group(2))
+          new_code = 1_000_000_000 + build_number
+          if new_code > 2_100_000_000:
+              raise SystemExit("Android versionCode exceeded the supported maximum")
+
+          base_version = name_match.group(3)
+          new_dev_version = f"{base_version}-dev.{build_number}"
+
+          gradle = code_pattern.sub(
+              lambda match: f"{match.group(1)}{new_code}{match.group(3)}", gradle, count=1
+          )
+          gradle = suffix_pattern.sub(
+              lambda match: f"{match.group(1)}'-dev.{build_number}'", gradle, count=1
+          )
+
+          rust_pattern = re.compile(
+              r'(pub const VERSION: &str = if crate::PUBLIC_BUILD\s*\{\s*)'
+              r'("[^\"]+")'
+              r'(\s*\}\s*else\s*\{\s*)'
+              r'"[^\"]+"'
+              r'(\s*\};)'
+          )
+          rust, rust_count = rust_pattern.subn(
+              lambda match: (
+                  f"{match.group(1)}{match.group(2)}"
+                  f"{match.group(3)}\"{new_dev_version}\"{match.group(4)}"
+              ),
+              rust,
+              count=1,
+          )
+          if rust_count != 1:
+              raise SystemExit("Could not find the Android backend PUBLIC_BUILD version block in android_main.rs")
+
+          gradle_path.write_text(gradle, encoding="utf-8")
+          rust_path.write_text(rust, encoding="utf-8")
+          print(
+              f"Temporary Dev version: {new_dev_version} "
+              f"(versionCode {old_code} -> {new_code}); no repository commit will be created"
+          )
+          PY
+
+      - name: Restore stable Dev signing key
+        if: inputs.build_type == 'Dev Builds'
+        env:
+          DEV_KEYSTORE_BASE64: ${{ secrets.DEV_KEYSTORE_BASE64 }}
+        shell: bash
+        run: |
+          if [[ -z "$DEV_KEYSTORE_BASE64" ]]; then
+            echo "::error::Missing DEV_KEYSTORE_BASE64 repository secret. Add the persistent Dev keystore as a base64 secret before building Dev APKs."
+            exit 1
+          fi
+
+          mkdir -p .local/android
+          printf '%s' "$DEV_KEYSTORE_BASE64" | base64 --decode > .local/android/debug.keystore
+          keytool -list -keystore .local/android/debug.keystore \
+            -storepass android -alias androiddebugkey >/dev/null
+
       - name: Build development APK
         if: inputs.build_type == 'Dev Builds'
         run: >-
