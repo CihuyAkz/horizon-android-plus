@@ -53,7 +53,7 @@ pub(crate) fn read_png(files: &Files, file: &str) -> Option<Image> {
     let mut dec = png::Decoder::new(std::io::Cursor::new(data.as_slice()));
     dec.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = dec.read_info().ok()?;
-    let mut buf = vec![0u8; reader.output_buffer_size()];
+    let mut buf = vec![0u8; reader.output_buffer_size()?];
     let info = reader.next_frame(&mut buf).ok()?;
     let (w, h) = (info.width as usize, info.height as usize);
     let ch = match info.color_type {
