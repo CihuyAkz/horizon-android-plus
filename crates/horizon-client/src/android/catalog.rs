@@ -84,6 +84,10 @@ pub struct Config {
     pub renderer: RendererMode,
     pub render_scale: crate::display::RenderScale,
     pub orientation: Orientation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launcher_orientation: Option<Orientation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub game_orientation: Option<Orientation>,
     #[serde(flatten)]
     pub screen: crate::display::ScreenPreferences,
     pub input_host: InputHost,
@@ -98,7 +102,7 @@ pub struct Config {
 pub use horizon_client::android_gamepad::InputMode as InputHost;
 
 /// Android ActivityInfo orientations, independent of the device's natural axis.
-#[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Orientation {
     #[default]
@@ -134,8 +138,23 @@ impl Orientation {
             Self::Auto => 10,
         }
     }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Landscape => "landscape",
+            Self::Portrait => "portrait",
+            Self::ReverseLandscape => "reverse-landscape",
+            Self::ReversePortrait => "reverse-portrait",
+            Self::Auto => "auto",
+        }
+    }
 }
 impl Config {
+    pub fn launcher_orientation(&self) -> Orientation {
+        self.launcher_orientation.unwrap_or(Orientation::Portrait)
+    }
+    pub fn game_orientation(&self) -> Orientation {
+        self.game_orientation.unwrap_or(self.orientation)
+    }
     pub fn load(home: &Path) -> Self {
         let value: serde_json::Value = std::fs::read(home.join("android-launcher.json"))
             .ok()
@@ -208,6 +227,14 @@ impl Config {
             .find(|instance| instance.id == self.selected_instance)
             .or_else(|| self.instances.iter().find(|instance| instance.id == "default"))
             .expect("Config always retains its default instance")
+    }
+
+    pub fn has_created_instance(&self) -> bool {
+        self.instances.iter().any(|instance| instance.id != "default")
+    }
+
+    pub fn has_active_created_instance(&self) -> bool {
+        self.active_instance().id != "default"
     }
 
     pub fn game_home(&self, home: &Path) -> PathBuf {
@@ -814,5 +841,39 @@ mod source_policy_tests {
         assert_eq!(source_for(Page::Mods), browser::SourceId::Horizon);
         assert_eq!(source_for(Page::Packs), browser::SourceId::Modrinth);
         assert_eq!(source_for(Page::Shaders), browser::SourceId::Modrinth);
+    }
+
+    #[test]
+    fn a_created_and_active_instance_is_required_before_launching() {
+        let mut config: Config = serde_json::from_str("{}").unwrap();
+        config.ensure_instances();
+        assert!(!config.has_created_instance());
+        assert!(!config.has_active_created_instance());
+        config.create_instance("Survival").unwrap();
+        assert!(config.has_created_instance());
+        assert!(config.has_active_created_instance());
+        config.select_instance("default").unwrap();
+        assert!(!config.has_active_created_instance());
+        config.select_instance("survival").unwrap();
+        assert!(config.has_active_created_instance());
+        config.remove_instance("survival").unwrap();
+        assert!(!config.has_created_instance());
+        assert!(!config.has_active_created_instance());
+    }
+
+    #[test]
+    fn orientation_preferences_keep_legacy_defaults_and_saved_modes() {
+        let defaults: Config = serde_json::from_str("{}").unwrap();
+        assert_eq!(defaults.launcher_orientation(), Orientation::Portrait);
+        assert_eq!(defaults.game_orientation(), Orientation::Landscape);
+
+        let legacy: Config = serde_json::from_str(r#"{"orientation":"reverse-portrait"}"#).unwrap();
+        assert_eq!(legacy.game_orientation(), Orientation::ReversePortrait);
+
+        let saved: Config = serde_json::from_str(
+            r#"{"launcher_orientation":"reverse-landscape","game_orientation":"portrait"}"#,
+        ).unwrap();
+        assert_eq!(saved.launcher_orientation(), Orientation::ReverseLandscape);
+        assert_eq!(saved.game_orientation(), Orientation::Portrait);
     }
 }

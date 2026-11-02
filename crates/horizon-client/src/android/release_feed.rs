@@ -1,4 +1,4 @@
-//! Read-only view of Horizon's official Nightly releases.
+//! Read-only view of Horizon's official game releases.
 //!
 //! The upstream repository does not currently publish Android binaries. This feed therefore
 //! reports official build identities and exposes an Android download only when an ABI-matched
@@ -15,11 +15,12 @@ use std::{
 const API_URL: &str = "https://api.github.com/repos/horizon-rust/horizon/releases?per_page=100";
 const MIRROR_URL: &str = "https://mcp.playhorizon.dev/github/public/repos/horizon-rust/horizon/releases?per_page=100";
 const CACHE_TTL: u64 = 30 * 60;
+const MAX_RELEASES: usize = 16;
 const MAX_RESPONSE: u64 = 6 * 1024 * 1024;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct NightlyRelease {
+struct HorizonRelease {
     version: String,
     tag: String,
     name: String,
@@ -34,7 +35,7 @@ struct NightlyRelease {
 struct Snapshot {
     abi: String,
     checked_at: u64,
-    releases: Vec<NightlyRelease>,
+    releases: Vec<HorizonRelease>,
     error: Option<String>,
 }
 
@@ -60,7 +61,7 @@ fn state() -> &'static Mutex<State> {
 }
 
 fn cache_path(home: &Path) -> PathBuf {
-    home.join("cache").join("official-horizon-nightlies.json")
+    home.join("cache").join("official-horizon-game-releases.json")
 }
 
 fn load_cache(home: &Path, abi: &str) -> Snapshot {
@@ -173,9 +174,49 @@ fn android_asset(release: &Value, abi: &str) -> Option<(String, String)> {
     })
 }
 
-fn parse_release(release: &Value, abi: &str) -> Option<NightlyRelease> {
+fn is_nightly_tag(tag: &str) -> bool {
+    if tag == "nightly" {
+        return true;
+    }
+    let Some(date) = tag.strip_prefix("nightly-") else {
+        return false;
+    };
+    let bytes = date.as_bytes();
+    bytes.len() == 10
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes.iter().enumerate().all(|(index, byte)| {
+            matches!(index, 4 | 7) || byte.is_ascii_digit()
+        })
+}
+
+fn is_horizon_game_tag(tag: &str) -> bool {
+    is_nightly_tag(tag)
+        || tag.strip_prefix('v').is_some_and(|value| {
+            value.as_bytes().first().is_some_and(u8::is_ascii_digit)
+        })
+}
+
+fn compare_releases(left: &HorizonRelease, right: &HorizonRelease) -> std::cmp::Ordering {
+    match (left.tag == "nightly", right.tag == "nightly") {
+        (true, false) => return std::cmp::Ordering::Less,
+        (false, true) => return std::cmp::Ordering::Greater,
+        _ => {}
+    }
+    match (is_nightly_tag(&left.tag), is_nightly_tag(&right.tag)) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        (true, true) => right.date.cmp(&left.date),
+        (false, false) => std::cmp::Ordering::Equal,
+    }
+}
+
+fn parse_release(release: &Value, abi: &str) -> Option<HorizonRelease> {
+    if release.get("draft").and_then(Value::as_bool).unwrap_or(false) {
+        return None;
+    }
     let tag = release.get("tag_name")?.as_str()?.to_owned();
-    if tag != "nightly" && !tag.starts_with("nightly-") {
+    if !is_horizon_game_tag(&tag) {
         return None;
     }
     let name = release
@@ -192,11 +233,15 @@ fn parse_release(release: &Value, abi: &str) -> Option<NightlyRelease> {
         .or_else(|| published.get(..10).map(str::to_owned))
         .unwrap_or_default();
     let commit = commit_from_name(&name);
-    let version = match (date.is_empty(), commit.as_deref()) {
-        (false, Some(commit)) => format!("nightly-{date}-{commit}"),
-        (false, None) if tag == "nightly" => format!("nightly-{date}"),
-        (true, _) if tag == "nightly" => "nightly".to_owned(),
-        _ => tag.clone(),
+    let version = if is_nightly_tag(&tag) {
+        match (date.is_empty(), commit.as_deref()) {
+            (false, Some(commit)) => format!("nightly-{date}-{commit}"),
+            (false, None) if tag == "nightly" => format!("nightly-{date}"),
+            (true, _) if tag == "nightly" => "nightly".to_owned(),
+            _ => tag.clone(),
+        }
+    } else {
+        tag.clone()
     };
     let url = release
         .get("html_url")
@@ -205,7 +250,7 @@ fn parse_release(release: &Value, abi: &str) -> Option<NightlyRelease> {
         .unwrap_or("https://github.com/horizon-rust/horizon/releases")
         .to_owned();
     let asset = android_asset(release, abi);
-    Some(NightlyRelease {
+    Some(HorizonRelease {
         version,
         tag,
         name,
@@ -226,23 +271,19 @@ fn fetch_snapshot(abi: &str) -> Result<Snapshot, String> {
     let releases = value
         .as_array()
         .ok_or_else(|| "Release list did not contain an array".to_owned())?;
-    let mut nightly_releases = releases
+    let mut horizon_releases = releases
         .iter()
         .filter_map(|release| parse_release(release, abi))
         .collect::<Vec<_>>();
-    nightly_releases.sort_by(|left, right| {
-        (right.tag == "nightly")
-            .cmp(&(left.tag == "nightly"))
-            .then_with(|| right.date.cmp(&left.date))
-    });
-    nightly_releases.truncate(12);
-    if nightly_releases.is_empty() {
-        return Err("The official feed did not contain a Nightly release".into());
+    horizon_releases.sort_by(compare_releases);
+    horizon_releases.truncate(MAX_RELEASES);
+    if horizon_releases.is_empty() {
+        return Err("Horizon's release feed did not contain any game builds".into());
     }
     Ok(Snapshot {
         abi: abi.to_owned(),
         checked_at: now(),
-        releases: nightly_releases,
+        releases: horizon_releases,
         error: None,
     })
 }
@@ -256,7 +297,7 @@ pub fn refresh() {
 }
 
 /// Starts a background refresh when the cached feed is older than 30 minutes, and returns the
-/// last known official Nightlies immediately so status polling never blocks the game thread.
+/// last known official releases immediately so status polling never blocks the game thread.
 pub fn status(home: &Path, abi: &str) -> Value {
     let mut guard = state().lock().unwrap_or_else(|error| error.into_inner());
     if !guard.loaded {
@@ -276,7 +317,7 @@ pub fn status(home: &Path, abi: &str) -> Value {
         let home = home.to_owned();
         let abi = abi.to_owned();
         let spawned = std::thread::Builder::new()
-            .name("Horizon Nightly feed".into())
+            .name("Horizon game release feed".into())
             .spawn(move || {
                 let result = fetch_snapshot(&abi);
                 let mut guard = state().lock().unwrap_or_else(|error| error.into_inner());
@@ -293,7 +334,7 @@ pub fn status(home: &Path, abi: &str) -> Value {
             });
         if spawned.is_err() {
             guard.checking = false;
-            guard.snapshot.error = Some("Could not start the Nightly feed worker".into());
+            guard.snapshot.error = Some("Could not start the Horizon release feed worker".into());
         }
     }
     let latest = guard.snapshot.releases.first().cloned();
@@ -371,6 +412,61 @@ mod tests {
         assert_eq!(releases[0].tag, "nightly");
         assert_eq!(releases[0].version, "nightly-2026-11-01-c9d474d");
         assert_eq!(releases[1].version, "nightly-2026-11-01-4aa6854");
+    }
+
+    #[test]
+    fn official_feed_includes_horizon_game_releases_but_not_launcher_releases() {
+        let old_release = serde_json::json!({
+            "tag_name": "v0.2.95",
+            "name": "Horizon 0.2.95",
+            "published_at": "2026-10-27T12:00:00Z",
+            "html_url": "https://github.com/horizon-rust/horizon/releases/tag/v0.2.95",
+            "assets": []
+        });
+        let dated_release = serde_json::json!({
+            "tag_name": "v2026.10.19.15",
+            "name": "Horizon 2026.10.19.15",
+            "published_at": "2026-10-19T12:00:00Z",
+            "assets": []
+        });
+        let launcher_release = serde_json::json!({
+            "tag_name": "launcher@0.2.36",
+            "name": "Horizon launcher 0.2.36",
+            "published_at": "2026-11-02T03:12:00Z",
+            "assets": []
+        });
+        assert_eq!(parse_release(&old_release, "arm64-v8a").unwrap().version, "v0.2.95");
+        assert_eq!(parse_release(&dated_release, "arm64-v8a").unwrap().version, "v2026.10.19.15");
+        assert!(parse_release(&launcher_release, "arm64-v8a").is_none());
+    }
+
+    #[test]
+    fn release_order_keeps_current_nightly_then_previous_nightlies_then_old_game_releases() {
+        let current = serde_json::json!({
+            "tag_name": "nightly",
+            "name": "Nightly 2026-11-01 · c9d474d",
+            "published_at": "2026-11-01T19:09:00Z",
+            "assets": []
+        });
+        let previous = serde_json::json!({
+            "tag_name": "nightly-2026-10-31",
+            "name": "Nightly 2026-10-31 · d91cab6",
+            "published_at": "2026-10-31T16:58:00Z",
+            "assets": []
+        });
+        let old = serde_json::json!({
+            "tag_name": "v0.2.95",
+            "name": "Horizon 0.2.95",
+            "published_at": "2026-10-27T12:00:00Z",
+            "assets": []
+        });
+        let mut releases = [current, previous, old]
+            .iter()
+            .filter_map(|release| parse_release(release, "arm64-v8a"))
+            .collect::<Vec<_>>();
+        releases.sort_by(compare_releases);
+        assert_eq!(releases.iter().map(|release| release.tag.as_str()).collect::<Vec<_>>(),
+            vec!["nightly", "nightly-2026-10-31", "v0.2.95"]);
     }
 
     #[test]

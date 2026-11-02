@@ -361,6 +361,7 @@
 @media(max-width:760px){.home-nightly-head{align-items:flex-start;flex-direction:column}.home-nightly-actions .btn{flex:1}.nightly-release-row{align-items:flex-start;flex-direction:column;gap:4px}}
 </style>
 
+
 <style>
 /* Cinematic first-entry title sequence */
 .horizon-intro{position:fixed;inset:0;z-index:12000;display:grid;place-items:center;overflow:hidden;padding:24px;background:radial-gradient(ellipse at 50% 46%,#312044 0%,#171421 36%,#08090f 78%);color:#fff;opacity:1;visibility:visible;transition:opacity .62s cubic-bezier(.2,.7,.2,1),visibility .62s;isolation:isolate}
@@ -380,8 +381,6 @@
 .horizon-intro-rule{width:min(240px,62vw);height:2px;border-radius:10px;background:rgba(255,255,255,.1);overflow:hidden;margin-top:37px;opacity:0;animation:introTextIn .6s .82s ease forwards}
 .horizon-intro-rule span{display:block;width:34%;height:100%;border-radius:inherit;background:linear-gradient(90deg,transparent,#e8a1ff,#fff,transparent);box-shadow:0 0 18px #d55bff;animation:introProgress 1.8s .9s cubic-bezier(.5,0,.2,1) forwards}
 .horizon-intro-caption{margin-top:13px;font:9px/1.5 'DM Mono',monospace;letter-spacing:.14em;color:rgba(221,210,237,.48);text-transform:uppercase;opacity:0;animation:introTextIn .6s 1s ease forwards}
-.horizon-intro-skip{position:absolute;right:calc(20px + env(safe-area-inset-right,0px));bottom:calc(17px + env(safe-area-inset-bottom,0px));height:34px;padding:0 14px;border:1px solid rgba(255,255,255,.16);border-radius:999px;background:rgba(255,255,255,.045);color:rgba(255,255,255,.65);font:700 9px 'DM Mono',monospace;letter-spacing:.12em;text-transform:uppercase;transition:background .18s,color .18s,border-color .18s}
-.horizon-intro-skip:hover{background:rgba(255,255,255,.12);border-color:rgba(255,255,255,.35);color:#fff}
 @keyframes introNebula{to{transform:rotate(360deg)}}
 @keyframes introContentIn{from{opacity:0;transform:translateY(18px) scale(.96);filter:blur(8px)}to{opacity:1;transform:translateY(0) scale(1);filter:blur(0)}}
 @keyframes introEmblemFloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
@@ -390,34 +389,9 @@
 @keyframes introTextIn{from{opacity:0;transform:translateY(8px);filter:blur(4px)}to{opacity:1;transform:translateY(0);filter:blur(0)}}
 @keyframes introProgress{from{transform:translateX(-115%)}to{transform:translateX(310%)}}
 
-/* Native game hand-off loading layer. It remains above the game until first frame. */
-.game-loading-overlay{position:fixed;inset:0;z-index:13000;display:grid;place-items:center;overflow:hidden;padding:26px;background:radial-gradient(ellipse at 50% 42%,#271b39 0%,#11121b 42%,#07080d 100%);color:#fff;opacity:0;visibility:hidden;pointer-events:none;transition:opacity .42s cubic-bezier(.2,.7,.2,1),visibility .42s;isolation:isolate}
-.game-loading-overlay::before{content:"";position:absolute;inset:-25%;z-index:-1;background:conic-gradient(from 45deg at 50% 50%,transparent 0 28%,rgba(177,90,255,.1) 34%,transparent 45% 68%,rgba(92,145,255,.1) 76%,transparent 86%);filter:blur(32px);animation:gameLoaderNebula 16s linear infinite}
-.game-loading-overlay.is-visible{opacity:1;visibility:visible;pointer-events:auto}
-.game-loading-overlay.is-leaving{opacity:0;visibility:hidden;pointer-events:none}
-.game-loading-content{width:min(420px,100%);display:flex;align-items:center;flex-direction:column;text-align:center;animation:gameLoaderEnter .55s cubic-bezier(.2,.8,.2,1) both}
-.game-loading-brand{display:flex;align-items:center;gap:9px;font:800 10px 'DM Mono',monospace;letter-spacing:.21em;color:rgba(238,218,255,.7);text-transform:uppercase}
-.game-loading-brand-mark{width:24px;height:24px;border-radius:8px;display:grid;place-items:center;background:linear-gradient(145deg,#eab3ff,#8c46dc);color:#1c1129;font:900 14px Inter,sans-serif;box-shadow:0 0 24px rgba(191,89,255,.28)}
-.game-loading-visual{width:120px;height:120px;position:relative;display:grid;place-items:center;margin:35px 0 27px}
-.game-loading-orbit{position:absolute;inset:4px;border:1px solid rgba(216,173,255,.22);border-radius:50%;animation:gameOrbit 5.8s linear infinite}
-.game-loading-orbit::before,.game-loading-orbit::after{content:"";position:absolute;width:7px;height:7px;border-radius:50%;background:#d78aff;box-shadow:0 0 16px #d78aff;top:12px;left:20px}
-.game-loading-orbit::after{width:5px;height:5px;top:auto;left:auto;right:12px;bottom:26px;background:#8eacff;box-shadow:0 0 15px #8eacff}
-.game-loading-core{width:63px;height:63px;border-radius:20px;display:grid;place-items:center;background:linear-gradient(145deg,rgba(220,151,255,.22),rgba(92,63,145,.12));border:1px solid rgba(233,197,255,.34);box-shadow:0 0 46px rgba(164,75,235,.2),inset 0 1px rgba(255,255,255,.16);animation:gameCorePulse 1.8s ease-in-out infinite}
-.game-loading-core span{font:900 34px Inter,sans-serif;letter-spacing:-.12em;color:#f1d5ff;text-shadow:0 0 22px rgba(221,147,255,.58);transform:translateX(-2px)}
-.game-loading-title{font-size:clamp(20px,5vw,27px);font-weight:800;letter-spacing:-.04em;margin:0;color:#fff}
-.game-loading-copy{font:10px/1.7 Inter,system-ui,sans-serif;color:rgba(226,220,240,.66);margin:9px 0 25px;max-width:310px}
-.game-loading-track{width:min(280px,76vw);height:3px;border-radius:10px;overflow:hidden;background:rgba(255,255,255,.12)}
-.game-loading-track span{display:block;width:35%;height:100%;border-radius:inherit;background:linear-gradient(90deg,transparent,#b86bff,#f5d8ff,transparent);box-shadow:0 0 16px rgba(201,116,255,.8);animation:gameLoadingSweep 1.25s ease-in-out infinite}
-.game-loading-caption{margin-top:13px;font:8px 'DM Mono',monospace;letter-spacing:.18em;text-transform:uppercase;color:rgba(204,191,222,.42)}
-@keyframes gameLoaderNebula{to{transform:rotate(360deg)}}
-@keyframes gameLoaderEnter{from{opacity:0;transform:translateY(12px) scale(.98);filter:blur(5px)}to{opacity:1;transform:translateY(0) scale(1);filter:blur(0)}}
-@keyframes gameOrbit{to{transform:rotate(360deg)}}
-@keyframes gameCorePulse{0%,100%{transform:scale(.94);box-shadow:0 0 30px rgba(164,75,235,.16),inset 0 1px rgba(255,255,255,.16)}50%{transform:scale(1.05);box-shadow:0 0 54px rgba(164,75,235,.34),inset 0 1px rgba(255,255,255,.2)}}
-@keyframes gameLoadingSweep{from{transform:translateX(-120%)}to{transform:translateX(360%)}}
-@media(max-width:520px){.horizon-intro-emblem{width:88px;height:88px}.horizon-intro-mark{width:70px;height:70px;border-radius:22px}.horizon-intro-mark span{font-size:42px}.horizon-intro-logo{width:min(430px,84vw);max-height:76px}.game-loading-visual{margin:28px 0 23px}}
-@media(prefers-reduced-motion:reduce){.horizon-intro::before,.horizon-intro-emblem,.horizon-intro-emblem::before,.horizon-intro-emblem::after,.horizon-intro-mark::after,.horizon-intro-rule span,.game-loading-overlay::before,.game-loading-orbit,.game-loading-core,.game-loading-track span{animation:none!important}.horizon-intro-content,.horizon-intro-kicker,.horizon-intro-logo,.horizon-intro-rule,.horizon-intro-caption,.game-loading-content{animation:none!important;opacity:1!important;filter:none!important}.horizon-intro,.game-loading-overlay{transition:none!important}}
+@media(max-width:520px){.horizon-intro-emblem{width:88px;height:88px}.horizon-intro-mark{width:70px;height:70px;border-radius:22px}.horizon-intro-mark span{font-size:42px}.horizon-intro-logo{width:min(430px,84vw);max-height:76px}}
+@media(prefers-reduced-motion:reduce){.horizon-intro::before,.horizon-intro-emblem,.horizon-intro-emblem::before,.horizon-intro-emblem::after,.horizon-intro-mark::after,.horizon-intro-rule span{animation:none!important}.horizon-intro-content,.horizon-intro-kicker,.horizon-intro-logo,.horizon-intro-rule,.horizon-intro-caption{animation:none!important;opacity:1!important;filter:none!important}.horizon-intro{transition:none!important}}
 </style>
-
 </head>
 <body data-theme="dark">
 <div class="app" id="app"></div>
@@ -430,17 +404,6 @@
     <img class="horizon-intro-logo" id="horizonIntroLogo" alt="Horizon Android Plus">
     <div class="horizon-intro-rule"><span></span></div>
     <div class="horizon-intro-caption">Preparing your next adventure</div>
-  </div>
-  <button class="horizon-intro-skip" id="horizonIntroSkip" type="button">Skip intro</button>
-</div>
-<div class="game-loading-overlay" id="gameLoadingOverlay" role="status" aria-live="polite" aria-label="Starting game">
-  <div class="game-loading-content">
-    <div class="game-loading-brand"><span class="game-loading-brand-mark">H</span><span>Horizon Engine</span></div>
-    <div class="game-loading-visual"><div class="game-loading-orbit"></div><div class="game-loading-core"><span>H</span></div></div>
-    <h2 class="game-loading-title">Entering your world</h2>
-    <p class="game-loading-copy">Starting your game session. Keep the app open while Horizon prepares the game.</p>
-    <div class="game-loading-track"><span></span></div>
-    <div class="game-loading-caption">Initializing game session</div>
   </div>
 </div>
 
@@ -604,14 +567,8 @@ const HORIZON_MOD_INDEX_URL='https://horizon-rust.github.io/horizon-mods/index.j
 const HORIZON_MODS_PAGE='https://playhorizon.dev/mods';
 let horizonModIndexCache=null;
 const contentLibrary={mods:[],resourcepacks:[],shaders:[],worlds:[]};
-const state={page:'home',settingTab:'general',libraryTab:'mods',search:'',downloadCategory:'resourcepacks',downloadProvider:'modrinth',downloadResults:[],downloadBusy:false,downloadMessage:'',downloadQuery:'',imported:loadStore('horizon-imports',{mods:[],resourcepacks:[],shaders:[],worlds:[]}),firstRunClosed:localStorage.getItem('horizon-demo-setup-complete')==='1'||sessionStorage.getItem('horizon-setup-skipped')==='1',theme:localStorage.getItem('horizon-theme')||'dark',customBackground:localStorage.getItem('horizon-custom-background')||'',accounts:loadStore('horizon-accounts',[]),settings:Object.assign({animations:true,language:'English',themeMode:'Dark',gradientA:'#17102a',gradientB:'#102b3b',launcherOrientation:'portrait',gameOrientation:'landscape'},loadStore('horizon-settings',{})),modal:null};
-for(const key of ['mobileControls','vsync','memory','showFps','showCoords','javaPath','customJava','fullscreen','resolution','uiScale'])delete state.settings[key];
-try {
- const nativeOrientation=JSON.parse(window.HorizonAndroid?.orientationSettings?.()||'{}');
- if(['portrait','landscape','reverse-portrait','reverse-landscape','auto'].includes(nativeOrientation.launcherOrientation))state.settings.launcherOrientation=nativeOrientation.launcherOrientation;
- if(['portrait','landscape','reverse-portrait','reverse-landscape','auto'].includes(nativeOrientation.gameOrientation))state.settings.gameOrientation=nativeOrientation.gameOrientation;
-} catch {}
-localStorage.setItem('horizon-settings',JSON.stringify(state.settings));
+const state={page:'home',settingTab:'general',libraryTab:'mods',search:'',downloadCategory:'resourcepacks',downloadProvider:'modrinth',downloadResults:[],downloadBusy:false,downloadMessage:'',downloadQuery:'',imported:loadStore('horizon-imports',{mods:[],resourcepacks:[],shaders:[],worlds:[]}),firstRunClosed:localStorage.getItem('horizon-demo-setup-complete')==='1'||sessionStorage.getItem('horizon-setup-skipped')==='1',theme:localStorage.getItem('horizon-theme')||'dark',customBackground:localStorage.getItem('horizon-custom-background')||'',accounts:loadStore('horizon-accounts',[]),settings:Object.assign({animations:true,language:'English',themeMode:'Dark',gradientA:'#17102a',gradientB:'#102b3b'},loadStore('horizon-settings',{})),modal:null};
+for(const key of ['mobileControls','vsync','memory','showFps','showCoords','javaPath','customJava','fullscreen','resolution','uiScale','launcherOrientation','gameOrientation'])delete state.settings[key];
 function loadStore(key,fallback){try{const v=JSON.parse(localStorage.getItem(key));return v??fallback}catch{return fallback}}
 if(state.accounts.length===1&&state.accounts[0]?.name==='Steve_Explorer'&&state.accounts[0]?.type==='Offline'){state.accounts=[];localStorage.setItem('horizon-accounts','[]')}
 function saveStore(){localStorage.setItem('horizon-theme',state.theme);localStorage.setItem('horizon-accounts',JSON.stringify(state.accounts));localStorage.setItem('horizon-settings',JSON.stringify(state.settings));localStorage.setItem('horizon-imports',JSON.stringify(state.imported))}
@@ -969,12 +926,13 @@ document.addEventListener('change',e=>{
  }
 });
 document.addEventListener('input',e=>{if(e.target.id==='instanceCreateName'){state.instanceDraftName=e.target.value;const preview=document.getElementById('instanceCreatePreviewName');const counter=document.getElementById('instanceCreateCounter');if(preview)preview.textContent=e.target.value.trim()||'New Instance';if(counter)counter.textContent=e.target.value.length+'/32';return;}if(e.target.matches('[data-action="instance-search"]')){state.instanceSearch=e.target.value;const position=e.target.selectionStart;render();const next=document.querySelector('[data-action="instance-search"]');if(next){next.focus();next.setSelectionRange(position,position)}return;}if(e.target.id==='globalSearch'||e.target.id==='pageSearch'){state.search=e.target.value;if(['resourcepacks','shaders'].includes(state.page)){state.libraryPages[state.page]=1;}const start=e.target.selectionStart;const end=e.target.selectionEnd;render();const next=document.getElementById(e.target.id);if(next){next.focus();next.setSelectionRange(start,end)}}if(e.target.matches('[data-action="setting-range"]')){const out=document.getElementById('range-'+e.target.dataset.key);if(out)out.textContent=e.target.dataset.key==='resolution'?'Resolusi: '+Number(e.target.value)+'%':(Number(e.target.value)/1024).toFixed(1)+' GB'}if(e.target.matches('[data-native-setting="renderScalePercent"]')){const value=Number(e.target.value),min=Number(e.target.min),max=Number(e.target.max),out=document.getElementById('native-range-renderScalePercent'),caption=document.getElementById('native-range-caption-renderScalePercent');if(out)out.textContent=value+'%';if(caption)caption.textContent=value===100?'NATIVE SCALE':'CUSTOM SCALE';e.target.style.setProperty('--range-progress',((value-min)/(max-min))*100+'%');e.target.setAttribute('aria-valuetext',value+' percent')}});
-document.addEventListener('change',e=>{if(e.target.id==='instanceCreateVersion'){state.instanceDraftVersion=e.target.value;const hint=document.getElementById('instanceCreateBuildHint');if(hint){const option=e.target.selectedOptions?.[0];hint.textContent=(option?.textContent||'Follow latest compatible build')+' · '+(state.nativeStatus?.runtimeAbi||'device ABI');}return;}if(e.target.matches('[data-action=\"nightly-auto-updates\"]')){state.autoNightlyUpdates=e.target.checked;localStorage.setItem('horizon-auto-nightly-updates',state.autoNightlyUpdates?'true':'false');state.nativeAutoNightlyAttempt='';state.nativeAutoNightlyAttemptAt=0;if(state.autoNightlyUpdates)maybeAutoInstallOfficialNightly(state.nativeStatus);render();return}if(e.target.matches('[data-action=\"instance-version-for\"]')){const active=e.target.dataset.id===(state.nativeStatus?.activeInstanceId||'default');if(nativeCommand(18,JSON.stringify({id:e.target.dataset.id,version:e.target.value})))toast(active?'Build preference sent. Restart Horizon to apply it.':'Build preference sent for this Instance.');else toast('Could not send the build preference.');return}if(e.target.matches('[data-download-jump]'))jumpDownloadPage(e.target.dataset.downloadJump,e.target.value);if(e.target.matches('[data-local-setting]')){const key=e.target.dataset.localSetting,value=e.target.value;if(key==='launcherOrientation'||key==='gameOrientation'){if(!['portrait','landscape','reverse-portrait','reverse-landscape','auto'].includes(value))return;state.settings[key]=value;saveStore();try{if(window.HorizonAndroid?.setOrientations)window.HorizonAndroid.setOrientations(state.settings.launcherOrientation||'portrait',state.settings.gameOrientation||'landscape')}catch{}render();toast('Launcher and gameplay orientation saved');return}if(key==='themeMode'){if(value==='Custom image'&&!state.customBackground){e.target.value=state.settings.themeMode||'Dark';document.getElementById('themeImageInput')?.click();return}state.settings.themeMode=value;state.theme=({'Dark':'dark','Light':'light','OLED':'oled','Gradient':'gradient','Custom image':'custom'})[value]||'dark'}else state.settings[key]=value;saveStore();render();toast('Preference saved')}if(e.target.matches('[data-native-setting]')){const key=e.target.dataset.nativeSetting;const numeric=['renderScalePercent','displayHz'].includes(key);const value=numeric?Number(e.target.value):e.target.value;if(nativeCommand(10,JSON.stringify({key,value})))toast('Advanced setting request sent to Android.')}if(e.target.matches('[data-action="setting-select"]')){const key=e.target.dataset.key;if(state.settings[key]!==e.target.value){state.settings[key]=e.target.value;if(key==='themeMode')state.theme=({'Dark':'dark','Light':'light','OLED':'oled','Gradient':'gradient','Custom image':'custom'})[e.target.value]||'dark';saveStore();render();toast('Preference saved')}}if(e.target.matches('[data-action="setting-text"]')){state.settings[e.target.dataset.key]=e.target.value;saveStore()}if(e.target.matches('[data-action="setting-range"]')){state.settings[e.target.dataset.key]=Number(e.target.value);saveStore()}});
+document.addEventListener('change',e=>{if(e.target.id==='instanceCreateVersion'){state.instanceDraftVersion=e.target.value;const hint=document.getElementById('instanceCreateBuildHint');if(hint){const option=e.target.selectedOptions?.[0];hint.textContent=(option?.textContent||'Follow latest compatible build')+' · '+(state.nativeStatus?.runtimeAbi||'device ABI');}return;}if(e.target.matches('[data-action=\"nightly-auto-updates\"]')){state.autoNightlyUpdates=e.target.checked;localStorage.setItem('horizon-auto-nightly-updates',state.autoNightlyUpdates?'true':'false');state.nativeAutoNightlyAttempt='';state.nativeAutoNightlyAttemptAt=0;if(state.autoNightlyUpdates)maybeAutoInstallOfficialNightly(state.nativeStatus);render();return}if(e.target.matches('[data-action=\"instance-version-for\"]')){const active=e.target.dataset.id===(state.nativeStatus?.activeInstanceId||'default');if(nativeCommand(18,JSON.stringify({id:e.target.dataset.id,version:e.target.value})))toast(active?'Build preference sent. Restart Horizon to apply it.':'Build preference sent for this Instance.');else toast('Could not send the build preference.');return}if(e.target.matches('[data-download-jump]'))jumpDownloadPage(e.target.dataset.downloadJump,e.target.value);if(e.target.matches('[data-local-setting]')){const key=e.target.dataset.localSetting,value=e.target.value;if(key==='themeMode'){if(value==='Custom image'&&!state.customBackground){e.target.value=state.settings.themeMode||'Dark';document.getElementById('themeImageInput')?.click();return}state.settings.themeMode=value;state.theme=({'Dark':'dark','Light':'light','OLED':'oled','Gradient':'gradient','Custom image':'custom'})[value]||'dark'}else state.settings[key]=value;saveStore();render();toast('Preference saved')}if(e.target.matches('[data-native-setting]')){const key=e.target.dataset.nativeSetting;const numeric=['renderScalePercent','displayHz'].includes(key);const value=numeric?Number(e.target.value):e.target.value;if(nativeCommand(10,JSON.stringify({key,value})))toast('Advanced setting request sent to Android.')}if(e.target.matches('[data-action="setting-select"]')){const key=e.target.dataset.key;if(state.settings[key]!==e.target.value){state.settings[key]=e.target.value;if(key==='themeMode')state.theme=({'Dark':'dark','Light':'light','OLED':'oled','Gradient':'gradient','Custom image':'custom'})[e.target.value]||'dark';saveStore();render();toast('Preference saved')}}if(e.target.matches('[data-action="setting-text"]')){state.settings[e.target.dataset.key]=e.target.value;saveStore()}if(e.target.matches('[data-action="setting-range"]')){state.settings[e.target.dataset.key]=Number(e.target.value);saveStore()}});
 document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.matches('[data-download-jump]')){e.preventDefault();jumpDownloadPage(e.target.dataset.downloadJump,e.target.value)}if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();document.getElementById('globalSearch')?.focus()}if(e.key==='Escape'&&state.modal)closeModal();if(e.key==='Enter'&&e.target.id==='globalSearch'){e.preventDefault()}if(e.key==='Enter'&&e.target.id==='downloadQuery'){e.preventDefault();searchDownloads()}});
 /* Android HTML launcher: native-backed UI. The standalone HTML stays a safe preview. */
 state.accounts=[];
 state.imported={mods:[],resourcepacks:[],shaders:[],worlds:[]};
 state.nativeSnapshot='';
+state.nativeOperationId=0;
 state.autoNightlyUpdates=localStorage.getItem('horizon-auto-nightly-updates')!=='false';
 state.nativeAutoNightlyAttempt='';
 state.nativeAutoNightlyAttemptAt=0;
@@ -999,6 +957,11 @@ function refreshNativeStatus(){
   state.nativeSnapshot=snapshot;
   if(state.pendingInstanceId&&(next.activeInstanceId===state.pendingInstanceId||next.error))state.pendingInstanceId='';
   state.nativeStatus={...state.nativeStatus,...next,connected:true};
+  const operation=next.operation;
+  if(operation&&Number.isFinite(Number(operation.id))&&Number(operation.id)>state.nativeOperationId){
+   state.nativeOperationId=Number(operation.id);
+   if(operation.message)toast(String(operation.message));
+  }
   maybeAutoInstallOfficialNightly(state.nativeStatus);
   if(document.getElementById('app')&&!state.modal)render();
  }catch(error){
@@ -1036,36 +999,8 @@ function startHorizonIntro(){
  try{alreadyPlayed=sessionStorage.getItem('horizon-title-intro-played-v1')==='1';}catch{}
  if(alreadyPlayed||state.settings.animations===false){intro.remove();return;}
  try{sessionStorage.setItem('horizon-title-intro-played-v1','1');}catch{}
- document.getElementById('horizonIntroSkip')?.addEventListener('click',dismissHorizonIntro,{once:true});
  window.setTimeout(dismissHorizonIntro,2850);
 }
-function showGameLoadingScreen(){
- const overlay=document.getElementById('gameLoadingOverlay');
- if(!overlay)return;
- const active=(state.nativeStatus?.instances||[]).find(item=>item.id===(state.nativeStatus?.activeInstanceId||'default'));
- const title=overlay.querySelector('.game-loading-title');
- const copy=overlay.querySelector('.game-loading-copy');
- if(title)title.textContent=active?.name?`Entering ${active.name}`:'Entering your world';
- if(copy)copy.textContent=active?.name?`Starting the ${active.name} game session. Keep Horizon open while the game initializes.`:'Starting your game session. Keep Horizon open while the game initializes.';
- overlay.classList.remove('is-leaving');
- overlay.classList.add('is-visible');
-}
-function finishGameLoadingOverlay(){
- const overlay=document.getElementById('gameLoadingOverlay');
- if(!overlay)return;
- overlay.classList.remove('is-visible');
- overlay.classList.add('is-leaving');
- window.setTimeout(()=>{overlay.classList.remove('is-leaving');},480);
-}
-function cancelGameLoadingOverlay(){finishGameLoadingOverlay();}
-function resetGameLoadingOverlay(){
- const overlay=document.getElementById('gameLoadingOverlay');
- if(!overlay)return;
- overlay.classList.remove('is-visible','is-leaving');
-}
-window.finishGameLoadingOverlay=finishGameLoadingOverlay;
-window.cancelGameLoadingOverlay=cancelGameLoadingOverlay;
-window.resetGameLoadingOverlay=resetGameLoadingOverlay;
 
 function nativeCommand(action,payload=''){
  if(!hasNativeBridge()){
@@ -1161,15 +1096,23 @@ function instancesPage(){
   const activateButton=active?'<span class="pill green">Active Instance</span>':`<button class="btn primary" data-action="instance-activate" data-id="${escapeAttr(selected.id)}">${ico('play',13)} Set as active</button>`;
   const deleteButton=selected.id==='default'?'':`<button class="btn danger" data-action="instance-delete" data-id="${escapeAttr(selected.id)}">${ico('trash',13)} Delete</button>`;
   const loadedLabel=active?buildLabel(loaded||latest):'Not loaded';
-  const releaseRows=compatibleReleases.slice(0,3).map((release,index)=>`<div class="instances-source-row"><div><strong>${escapeHtml(release.version||release.tag||'Official Nightly')}</strong><small>${escapeHtml(release.androidRuntimeAsset||'ABI-compatible Android runtime')}</small></div><button class="btn small" data-action="install-official-version" data-url="${escapeAttr(release.androidRuntimeUrl)}">Install build</button></div>`).join('');
+  const releaseRows=releases.slice(0,12).map(release=>{
+   const androidReady=!!release.androidRuntimeUrl;
+   const isNightly=String(release.tag||'').startsWith('nightly');
+   const subtitle=[isNightly?(release.tag==='nightly'?'Current Horizon Nightly':'Previous Horizon Nightly'):'Previous Horizon game release',release.date||'',release.commit?`Commit ${String(release.commit).slice(0,12)}`:''].filter(Boolean).join(' · ');
+   const action=androidReady
+    ?`<button class="btn small" data-action="install-official-version" data-url="${escapeAttr(release.androidRuntimeUrl)}">Install Android build</button>`
+    :`<span class="pill yellow">No Android package</span>`;
+   return `<div class="instances-source-row"><div><strong>${escapeHtml(release.version||release.tag||'Horizon release')}</strong><small>${escapeHtml(subtitle)}</small></div>${action}</div>`;
+  }).join('');
   const latestRelease=feed.latest||releases[0]||null;
-  const sourceDescription=compatibleReleases.length
-   ?`The official catalogue has Android runtime packages for ${escapeHtml(feed.abi||n.runtimeAbi||'this ABI')}. Install one, then choose it above.`
-   :feed.checking?'Checking the official release catalogue for Android builds…'
-    :`No ABI-matched Android runtime is listed in the official Nightly feed${feed.abi?` for ${escapeHtml(feed.abi)}`:''}. Desktop archives are not usable here; import a compatible .hruntime.zip package.`;
+  const sourceDescription=releases.length
+   ?`These are game builds published by Horizon itself in horizon-rust/horizon, not Mojang Minecraft versions and not Horizon launcher-app releases. The feed checks for a matching ${escapeHtml(feed.abi||n.runtimeAbi||'Android ABI')} runtime package; desktop archives cannot run on Android.`
+   :feed.checking?'Checking Horizon’s official game-release catalogue…'
+    :`No cached Horizon game releases are available yet. Refresh to check the official horizon-rust/horizon release feed.`;
   const latestInstall=latestRelease?.androidRuntimeUrl?`<button class="btn small primary" data-action="install-official-nightly" data-url="${escapeAttr(latestRelease.androidRuntimeUrl)}">${ico('download',13)} Install latest</button>`:'';
   const sourceError=feed.error?`<div class="instance-build-help">${escapeHtml(feed.error)}</div>`:'';
-  detail=`<div class="instance-detail-head"><div class="instance-detail-identity"><div class="instance-detail-cover">${ico('layers',29)}</div><div class="instance-detail-heading"><div class="instance-detail-kicker">Game profile</div><h2>${escapeHtml(selected.name||'Unnamed Instance')}</h2><div class="instance-detail-sub"><span>${active?'Active for Play':'Inactive profile'}</span><span>·</span><span>${escapeHtml(selected.id)}</span></div></div></div><div class="instance-detail-actions">${activateButton}${deleteButton}</div></div>${error}<div class="instance-detail-grid"><section class="instance-panel"><div class="instance-panel-head"><div><div class="instance-panel-kicker">Engine configuration</div><div class="instance-panel-title">Horizon Build</div></div><span class="pill ${missing||needsRestart?'yellow':'green'}">${missing?'Unavailable':needsRestart?'Pending restart':active?'Loaded':'Profile setting'}</span></div><p class="instance-build-intro">Choose which installed Android engine this profile should use. This is separate from the Minecraft game version.</p><div class="instance-build-list">${followChoice}${buildChoices||'<div class="instances-empty">No installed Android builds found.</div>'}</div><div class="instance-build-status ${missing||needsRestart?'warning':''}"><span class="status-dot"></span><span><strong>${statusTitle}.</strong> ${statusText}</span></div>${buildEmpty}<div class="instance-build-actions"><button class="btn small" data-action="instance-import-version">${ico('folderplus',13)} Import .hruntime.zip</button>${restartButton}</div></section><section class="instance-panel"><div class="instance-panel-head"><div><div class="instance-panel-kicker">Profile storage</div><div class="instance-panel-title">Separate game data</div></div>${active?'<span class="pill green">In use</span>':'<span class="pill">Isolated</span>'}</div><p class="instance-panel-copy">Worlds, settings, mods, resource packs and shaders are stored under this profile instead of being shared with other Instances.</p><div class="instance-info-grid"><div class="instance-info-row"><span>Profile ID</span><strong>${escapeHtml(selected.id)}</strong></div><div class="instance-info-row"><span>Saved build</span><strong>${escapeHtml(preferred?buildLabel(preferred):'Follow latest installed')}</strong></div><div class="instance-info-row"><span>Loaded build</span><strong>${escapeHtml(loadedLabel)}</strong></div><div class="instance-info-row"><span>Device ABI</span><strong>${escapeHtml(n.runtimeAbi||'Unknown')}</strong></div></div><div class="instance-data-tags"><span>Worlds</span><span>Settings</span><span>Mods</span><span>Resource packs</span><span>Shaders</span></div></section></div><section class="instances-source"><div class="instances-source-head"><div><div class="instance-panel-kicker">Build catalogue</div><div class="instances-source-title">Official Android builds</div></div><div style="display:flex;align-items:center;gap:7px">${latestInstall}<button class="btn small" data-action="refresh-official-nightlies">${ico('refresh',13)} Refresh</button></div></div><p class="instances-source-copy">${sourceDescription}</p>${releaseRows?`<div class="instances-source-list">${releaseRows}</div>`:''}${sourceError}</section>`;
+  detail=`<div class="instance-detail-head"><div class="instance-detail-identity"><div class="instance-detail-cover">${ico('layers',29)}</div><div class="instance-detail-heading"><div class="instance-detail-kicker">Game profile</div><h2>${escapeHtml(selected.name||'Unnamed Instance')}</h2><div class="instance-detail-sub"><span>${active?'Active for Play':'Inactive profile'}</span><span>·</span><span>${escapeHtml(selected.id)}</span></div></div></div><div class="instance-detail-actions">${activateButton}${deleteButton}</div></div>${error}<div class="instance-detail-grid"><section class="instance-panel"><div class="instance-panel-head"><div><div class="instance-panel-kicker">Engine configuration</div><div class="instance-panel-title">Horizon Build</div></div><span class="pill ${missing||needsRestart?'yellow':'green'}">${missing?'Unavailable':needsRestart?'Pending restart':active?'Loaded':'Profile setting'}</span></div><p class="instance-build-intro">Choose which installed Android engine this profile should use. This is separate from the Minecraft game version.</p><div class="instance-build-list">${followChoice}${buildChoices||'<div class="instances-empty">No installed Android builds found.</div>'}</div><div class="instance-build-status ${missing||needsRestart?'warning':''}"><span class="status-dot"></span><span><strong>${statusTitle}.</strong> ${statusText}</span></div>${buildEmpty}<div class="instance-build-actions"><button class="btn small" data-action="instance-import-version">${ico('folderplus',13)} Import .hruntime.zip</button>${restartButton}</div></section><section class="instance-panel"><div class="instance-panel-head"><div><div class="instance-panel-kicker">Profile storage</div><div class="instance-panel-title">Separate game data</div></div>${active?'<span class="pill green">In use</span>':'<span class="pill">Isolated</span>'}</div><p class="instance-panel-copy">Worlds, settings, mods, resource packs and shaders are stored under this profile instead of being shared with other Instances.</p><div class="instance-info-grid"><div class="instance-info-row"><span>Profile ID</span><strong>${escapeHtml(selected.id)}</strong></div><div class="instance-info-row"><span>Saved build</span><strong>${escapeHtml(preferred?buildLabel(preferred):'Follow latest installed')}</strong></div><div class="instance-info-row"><span>Loaded build</span><strong>${escapeHtml(loadedLabel)}</strong></div><div class="instance-info-row"><span>Device ABI</span><strong>${escapeHtml(n.runtimeAbi||'Unknown')}</strong></div></div><div class="instance-data-tags"><span>Worlds</span><span>Settings</span><span>Mods</span><span>Resource packs</span><span>Shaders</span></div></section></div><section class="instances-source"><div class="instances-source-head"><div><div class="instance-panel-kicker">Horizon game releases</div><div class="instances-source-title">Official Horizon releases</div></div><div style="display:flex;align-items:center;gap:7px">${latestInstall}<button class="btn small" data-action="refresh-official-nightlies">${ico('refresh',13)} Refresh</button></div></div><p class="instances-source-copy">${sourceDescription}</p>${releaseRows?`<div class="instances-source-list">${releaseRows}</div>`:`<div class="instances-empty">${feed.checking?'Loading Horizon releases…':'No Horizon game releases loaded.'}</div>`}${sourceError}</section>`;
  }
  const empty=instances.length===0?`<div class="instances-empty"><strong>No Instances yet</strong>Create a profile to keep worlds, settings and content separate.<div style="margin-top:12px"><button class="btn primary small" data-action="instance-create">${ico('plus',13)} Create Instance</button></div></div>`:filtered.length===0?`<div class="instances-empty"><strong>No matching Instances</strong>Try another name or profile ID.</div>`:'';
  const stats=`<div class="instances-toolbar-meta"><span><strong>${instances.length}</strong> ${instances.length===1?'profile':'profiles'}</span><span><strong>${versions.length}</strong> installed Android builds</span><span>${ico('cpu',12)} ${escapeHtml(n.runtimeAbi||'ABI unknown')}</span><span class="instances-active-count">${ico('check',12)} 1 active at a time</span></div>`;
@@ -1223,10 +1166,12 @@ function homePage(){
  const percent=Number(i.total)>0?Math.max(0,Math.min(100,Number(i.done)*100/Number(i.total))):0;
  const player=a.profile||a.offlineName||'No player selected';
  const counts={mods:0,resourcepacks:0,shaders:0};(n.items||[]).forEach(x=>{if(counts[x.kind]!==undefined)counts[x.kind]++});
+ const hasCreatedInstance=(n.instances||[]).some(instance=>instance.id!=='default');
+ const hasActiveInstance=(n.instances||[]).some(instance=>instance.id===n.activeInstanceId&&instance.id!=='default');
  return `<section class="home-dashboard">
   <div class="home-welcome"><div><div class="eyebrow">HORIZON ANDROID</div><h1>Welcome, ${escapeHtml(player)}</h1><p>HORIZON ENGINE · LIVE SESSION STATUS</p></div><div class="home-date-pill">${ico('cpu',14)} ${escapeHtml(n.version||'Minecraft runtime')}</div></div>
-  <div class="home-main-grid"><div class="home-play-panel"><div class="home-play-copy"><div class="home-overline">${installed?'GAME READY':'GAME CORE INITIALIZATION'}</div><h2>${installing?'Installing game files':installed?'Ready to play':'Prepare your game'}</h2><p>${escapeHtml(installing?(i.stage||'Native installer is working'):installed?'Start the real Horizon game session using the installed game files.':'The Horizon installer downloads and prepares the required game files on this device.')}</p>
-   <button class="horizon-play-button" data-action="launch" ${installing||n.busy&&!installed||((n.instances||[]).find(x=>x.id===n.activeInstanceId)?.version||n.followedRuntimeVersion||n.apkRuntimeVersion||n.runtimeVersion)!==n.runtimeVersion?'disabled':''}><span class="horizon-play-icon">${ico(installing?'clock':'play',21)}</span><span class="horizon-play-copy"><strong>${installing?'Installing…':installed?'Play':'Install game'}</strong><small>${installed?'Launch Horizon':installing?'Real install in progress':'Download game files'}</small></span></button>
+  <div class="home-main-grid"><div class="home-play-panel"><div class="home-play-copy"><div class="home-overline">${!hasActiveInstance?'GAME PROFILE REQUIRED':installed?'GAME READY':'GAME CORE INITIALIZATION'}</div><h2>${!hasActiveInstance?(hasCreatedInstance?'Select an Instance':'Create an Instance'):installing?'Installing game files':installed?'Ready to play':'Prepare your game'}</h2><p>${escapeHtml(!hasActiveInstance?'Select or create a separate game Instance before starting Horizon.':installing?(i.stage||'Native installer is working'):installed?'Start the real Horizon game session using the installed game files.':'The Horizon installer downloads and prepares the required game files on this device.')}</p>
+   <button class="horizon-play-button" data-action="launch" ${installing||n.busy&&!installed||((n.instances||[]).find(x=>x.id===n.activeInstanceId)?.version||n.followedRuntimeVersion||n.apkRuntimeVersion||n.runtimeVersion)!==n.runtimeVersion?'disabled':''}><span class="horizon-play-icon">${ico(!hasActiveInstance?'layers':installing?'clock':'play',21)}</span><span class="horizon-play-copy"><strong>${!hasActiveInstance?(hasCreatedInstance?'Select Instance first':'Create Instance first'):installing?'Installing…':installed?'Play':'Install game'}</strong><small>${!hasActiveInstance?'An active created Instance is required before entering the game':installed?'Launch Horizon':installing?'Real install in progress':'Download game files'}</small></span></button>
   </div></div>
   <div class="home-side-stack"><div class="home-info-card"><div class="home-info-icon">${ico('shield',18)}</div><div class="home-info-copy"><strong>Game Runtime</strong><span>${escapeHtml(n.status|| (n.connected?'Connected to Android':'Not connected'))}</span></div></div><div class="home-info-card"><div class="home-info-icon">${ico('user',18)}</div><div class="home-info-copy"><strong>Player account</strong><span>${escapeHtml(a.status||'Offline / Sign in')}</span></div></div></div></div>
   ${installing?`<div class="card section-gap"><div class="card-head"><div><h3 class="card-title">Game Setup Progress</h3><div class="card-sub">${escapeHtml(i.stage||'Preparing')}</div></div><span class="pill purple">${percent.toFixed(0)}%</span></div><div class="progress-track"><div class="progress-bar" style="width:${percent}%"></div></div><div class="home-status-row"><span>Transferred</span><strong>${Number(i.done||0).toLocaleString()} / ${Number(i.total||0).toLocaleString()} bytes</strong></div></div>`:''}
@@ -1278,7 +1223,7 @@ function libraryPage(type){
   ${pageHead('GAME FILE DIRECTORY',title,`Installed files in the real ${type} folder.`, `${importActions}<button class="btn" data-action="library-refresh">${ico('refresh')} Refresh</button>`)}
   <div class="toolbar"><div class="tabs"><button class="tab active">Installed <span style="opacity:.6">${items.length}</span></button></div><input class="filter-input" id="pageSearch" value="${escapeAttr(state.search)}" placeholder="Search ${escapeAttr(title.toLowerCase())}..."></div>
   <div class="card list-card">${items.length?pageItems.map(item=>`<div class="content-row"><div class="row-icon">${ico(type==='mods'?'package':type==='resourcepacks'?'box':'wand')}</div><div class="row-main"><strong>${escapeHtml(item.title||item.file)}</strong><small>${escapeHtml(item.file)} · ${item.enabled?'Enabled':'Disabled'}</small></div><div class="row-trailing"><span class="pill ${item.enabled?'green':'yellow'}">${item.enabled?'Enabled':'Disabled'}</span><button class="btn small" data-action="native-toggle" data-index="${item.index}">${item.enabled?'Disable':'Enable'}</button><button class="icon-btn" title="Remove file" data-action="native-remove" data-index="${item.index}">${ico('trash')}</button></div></div>`).join(''):`<div class="empty-state"><div class="empty-icon">${ico('folderplus',23)}</div><strong>No installed ${escapeHtml(title.toLowerCase())}</strong><p>Choose a file from Android storage to import a real ${escapeHtml(hint.toLowerCase())} (${escapeHtml(formats)}).</p>${emptyImportActions}</div>`}</div>
-  <div class="footer-note">Imports use Android's document picker and built-in validation. For shaders, Import &amp; Convert runs the supported Horizon compatibility conversion; Import Only installs the shader files unchanged and skips conversion.</div>`;
+  <div class="footer-note">Imports use Android's document picker and built-in validation. For shaders, Import &amp; Convert runs the Horizon shader converter and validates its output; Import Only installs the shader files unchanged and skips conversion.</div>`;
 }
 function accountsPage(){
  const n=state.nativeStatus||{},a=n.account||{},player=a.profile||a.offlineName||'No player selected';
@@ -1327,8 +1272,8 @@ function settingsPage(){
      <div class="setting-row"><div class="setting-copy"><strong>Performance reports</strong><small>Open the reports folder after a recording has been created.</small></div><button class="btn small" data-action="native-performance-export" ${connected?'':'disabled'}>${ico('folder')} Open reports</button></div>
     </div>
     <div class="setting-section"><h3>Display</h3><p>Configure launcher and gameplay orientation independently. Android device policies may limit fixed orientation on some screens.</p>
-     ${localSelect('Launcher orientation','Used while browsing Home, Instances, Settings, and other launcher pages.','launcherOrientation',orientationOptions,state.settings.launcherOrientation||'portrait')}
-     ${localSelect('In-game orientation','Applied when the actual game starts, then restored to launcher orientation when you return.','gameOrientation',orientationOptions,state.settings.gameOrientation||'landscape')}
+     ${nativeSelect('Launcher orientation','Used while browsing Home, Instances, Settings, and other launcher pages.','launcherOrientation',orientationOptions,s.launcherOrientation,'portrait')}
+     ${nativeSelect('In-game orientation','Applied when the actual game starts, then restored to launcher orientation when you return.','gameOrientation',orientationOptions,s.gameOrientation,'landscape')}
      ${nativeToggle('Immersive fullscreen','Hide Android system bars for a more immersive screen.','immersive',true)}
      ${nativeToggle('Avoid camera cutout','Keep the content area clear of the camera cutout where supported.','avoidCutout',false)}
      ${nativeSelect('Aspect ratio','Choose the target content area ratio without stretching the image.','aspect',aspectOptions,s.aspect,'native')}
@@ -1349,21 +1294,25 @@ function doAction(el){
  const action=el.dataset.action;
  switch(action){
   case 'launch':{
-   const showLoading=!!state.nativeStatus?.installed;
-   if(!hasNativeBridge()){nativeCommand(1,'');break;}
-   if(showLoading){showGameLoadingScreen();try{window.HorizonAndroid.beginGameLoading();}catch{}}
-   if(nativeCommand(1,showLoading?'loading':''))toast('Native launch request sent.');
-   else{try{window.HorizonAndroid?.cancelGameLoading();}catch{}cancelGameLoadingOverlay();}
+   const instances=state.nativeStatus?.instances||[];
+   const hasCreatedInstance=instances.some(instance=>instance.id!=='default');
+   const hasActiveInstance=instances.some(instance=>instance.id===state.nativeStatus?.activeInstanceId&&instance.id!=='default');
+   if(!hasActiveInstance){
+    if(!hasCreatedInstance){state.instanceDraftName='';state.instanceDraftVersion='';navigate('instance-create');toast('Create an Instance before starting the game.');}
+    else{navigate('instances');toast('Select a created Instance before starting the game.');}
+    break;
+   }
+   if(nativeCommand(1,''))toast('Native launch request sent.');
    break;
   }
-  case 'refresh-official-nightlies':if(nativeCommand(17,''))toast('Refreshing the official Horizon Nightly catalogue…');break;
+  case 'refresh-official-nightlies':if(nativeCommand(17,''))toast('Refreshing Horizon’s official game releases…');break;
   case 'install-official-nightly':{
    const url=el.dataset.url||'';
    if(!/^https:\/\/github\.com\/horizon-rust\/horizon\/releases\/download\//.test(url)||!window.HorizonAndroid||typeof window.HorizonAndroid.downloadRuntime!=='function'){
     toast('A verified official Android runtime is not available for this device.');break;
    }
    window.HorizonAndroid.downloadRuntime(url,true);
-   toast('Downloading and validating the official Android Nightly…');
+   toast('Downloading and validating the latest official Horizon Android build…');
    break;
   }
   case 'install-official-version':{
@@ -1372,7 +1321,7 @@ function doAction(el){
     toast('A compatible official Android build is not available for this device.');break;
    }
    window.HorizonAndroid.downloadRuntime(url,false);
-   toast('Installing this Nightly build. You can select it in the Instance Version dropdown when it finishes.');
+   toast('Installing this Horizon game build. You can select it in the Instance build list when it finishes.');
    break;
   }
    case 'go-accounts':closeModal();navigate('accounts');break;
