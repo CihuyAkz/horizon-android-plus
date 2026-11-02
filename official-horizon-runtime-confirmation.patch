@@ -1,0 +1,88 @@
+diff --git a/packaging/android/assets/Horizon-Android-Plus.html b/packaging/android/assets/Horizon-Android-Plus.html
+--- a/packaging/android/assets/Horizon-Android-Plus.html
++++ b/packaging/android/assets/Horizon-Android-Plus.html
+@@ -898 +898 @@
+-function closeModal(){state.modal=null;document.getElementById('modalRoot').innerHTML=''}
++function closeModal(){state.modal=null;state.pendingOfficialRuntimeInstall=null;document.getElementById('modalRoot').innerHTML=''}
+@@ -972,2 +972,19 @@
++function requestOfficialRuntimeInstall(url,followLatest,label){
++ const address=String(url||'');
++ const valid=/^https:\/\/github\.com\/horizon-rust\/horizon\/releases\/download\/[^/?#]+\/[^/?#]+\.hruntime\.zip$/.test(address);
++ if(!valid){toast('This release has no compatible Android runtime package. Desktop ZIP/TAR files cannot run on Android.');return false;}
++ if(!window.HorizonAndroid||typeof window.HorizonAndroid.downloadRuntime!=='function'){toast('Open Horizon Android + to install runtime packages.');return false;}
++ if(state.modal)return false;
++ const name=String(label||'Official Horizon release');
++ state.pendingOfficialRuntimeInstall={url:address,followLatest:!!followLatest,label:name};
++ const behavior=followLatest?'After installation, Instances set to follow latest will use this build.':'This release will be added side-by-side and can be selected from Instances.';
++ openModal(
++  'Continue with installation?',
++  `Install ${escapeHtml(name)} in Horizon Android +?`,
++  `<div class="notice"><strong>${escapeHtml(name)}</strong><br>This downloads an Android runtime from the official Horizon release and installs it inside Horizon Android +.</div><div class="notice">The package must match this device's Android ABI and Minecraft engine version. Android Plus checks the ELF architecture and SHA-256 before installing. Desktop ZIP/TAR archives are not accepted.</div><p class="muted">${behavior}</p>`,
++  '<button class="btn" data-action="cancel-official-runtime-install">Not now</button><button class="btn primary" data-action="confirm-official-runtime-install">Continue</button>'
++ );
++ return true;
++}
+ function maybeAutoInstallOfficialNightly(status){
+  const feed=status?.upstreamNightly,latest=feed?.latest;
+@@ -977,9 +994,8 @@
+  const installedCommit=String(feed.followedRuntimeCommit||'').toLowerCase(),latestCommit=String(latest.commit).toLowerCase();
+  if(installedCommit&&(installedCommit.startsWith(latestCommit)||latestCommit.startsWith(installedCommit)))return;
+- if(state.nativeAutoNightlyAttempt===latest.commit&&Date.now()-Number(state.nativeAutoNightlyAttemptAt||0)<10*60*1000)return;
++ if(state.nativeAutoNightlyAttempt===latest.commit||state.modal)return;
+  if(!window.HorizonAndroid||typeof window.HorizonAndroid.downloadRuntime!=='function')return;
+  state.nativeAutoNightlyAttempt=latest.commit;
+  state.nativeAutoNightlyAttemptAt=Date.now();
+- window.HorizonAndroid.downloadRuntime(latest.androidRuntimeUrl,true);
+- if(typeof toast==='function')toast('A compatible official Nightly was found. Downloading it for Instances that follow latest.');
++ requestOfficialRuntimeInstall(latest.androidRuntimeUrl,true,latest.version||'Latest official Horizon Nightly');
+ }
+@@ -1104 +1104 @@
+-`<button class="btn small" data-action="install-official-version" data-url="${escapeAttr(release.androidRuntimeUrl)}">Install Android build</button>`
++`<button class="btn small" data-action="install-official-version" data-url="${escapeAttr(release.androidRuntimeUrl)}" data-version="${escapeAttr(release.version||release.tag||'Official Horizon release')}">Install Android build</button>`
+@@ -1113 +1113 @@
+-`<button class="btn small primary" data-action="install-official-nightly" data-url="${escapeAttr(latestRelease.androidRuntimeUrl)}">${ico('download',13)} Install latest</button>`
++`<button class="btn small primary" data-action="install-official-nightly" data-url="${escapeAttr(latestRelease.androidRuntimeUrl)}" data-version="${escapeAttr(latestRelease.version||latestRelease.tag||'Latest official Horizon build')}">${ico('download',13)} Install latest</button>`
+@@ -1309,18 +1309,31 @@
+   case 'install-official-nightly':{
+-   const url=el.dataset.url||'';
+-   if(!/^https:\/\/github\.com\/horizon-rust\/horizon\/releases\/download\//.test(url)||!window.HorizonAndroid||typeof window.HorizonAndroid.downloadRuntime!=='function'){
+-    toast('A verified official Android runtime is not available for this device.');break;
+-   }
+-   window.HorizonAndroid.downloadRuntime(url,true);
+-   toast('Downloading and validating the latest official Horizon Android + build…');
++   requestOfficialRuntimeInstall(el.dataset.url||'',true,el.dataset.version||'Latest official Horizon Nightly');
+    break;
+   }
+   case 'install-official-version':{
+-   const url=el.dataset.url||'';
+-   if(!/^https:\/\/github\.com\/horizon-rust\/horizon\/releases\/download\//.test(url)||!window.HorizonAndroid||typeof window.HorizonAndroid.downloadRuntime!=='function'){
+-    toast('A compatible official Android build is not available for this device.');break;
+-   }
+-   window.HorizonAndroid.downloadRuntime(url,false);
+-   toast('Installing this Horizon game build. You can select it in the Instance build list when it finishes.');
++   requestOfficialRuntimeInstall(el.dataset.url||'',false,el.dataset.version||'Official Horizon release');
+    break;
+   }
++  case 'confirm-official-runtime-install':{
++   const pending=state.pendingOfficialRuntimeInstall;
++   state.pendingOfficialRuntimeInstall=null;
++   closeModal();
++   if(!pending)break;
++   const url=String(pending.url||'');
++   const valid=/^https:\/\/github\.com\/horizon-rust\/horizon\/releases\/download\/[^/?#]+\/[^/?#]+\.hruntime\.zip$/.test(url);
++   if(!valid||!window.HorizonAndroid||typeof window.HorizonAndroid.downloadRuntime!=='function'){
++    toast('A verified Android runtime package is not available for this release.');
++    break;
++   }
++   try{
++    window.HorizonAndroid.downloadRuntime(url,!!pending.followLatest);
++    toast(pending.followLatest?'Downloading the latest official Horizon Android runtime…':`Downloading ${pending.label||'the selected Horizon build'}…`);
++   }catch(error){toast('Could not start the official Horizon runtime installation.');}
++   break;
++  }
++  case 'cancel-official-runtime-install':{
++   state.pendingOfficialRuntimeInstall=null;
++   closeModal();
++   toast('Official Horizon installation cancelled.');
++   break;
++  }
