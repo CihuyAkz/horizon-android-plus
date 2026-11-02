@@ -281,6 +281,14 @@ jobs:
           --java-home "$JAVA_HOME"
           --gradle "$(command -v gradle)"
 
+      - name: Upload Android Horizon runtime bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: horizon-runtime-${{ inputs.abi }}
+          path: .local/android/runtime/${{ inputs.abi }}/*.hruntime.zip
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Upload public APK
         if: inputs.build_type == 'Public Builds'
         uses: actions/upload-artifact@v4
