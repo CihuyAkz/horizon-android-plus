@@ -1,24 +1,25 @@
-HORIZON ANDROID — FINAL FIX OVERLAY
+Horizon Android Plus - GitHub Actions compile fix
 
-Prepared for the CihuyAkz/horizon-android-plus Android source tree.
+Target branch: android
+Failed workflow run: 41472050027
+Build commit: 758c1fb545d5573b792da22578ed6d1d079a32d1
 
-WHAT'S INCLUDED
-- Shader ZIP import validation and extraction, including support for a root shaders/ folder or one wrapper directory.
-- Installation/removal of extracted shader-pack folders.
-- Updated launcher UI, creator credits and download progress visuals.
-- Larger inner joystick knob (outer joystick frame unchanged).
-- Android APK workflow using platform-tools instead of the obsolete SDK tools package.
-- Rust compile fix: ui_theme::color::with_alpha is public so the separate Android crate can call it.
-- Rust compile fix: documents.rs borrows `name` for dir.join(&name), so it remains available for the import notice.
+Replace the two source files in the repository with the files at the same
+relative paths in this archive.
 
-APPLY
-1. Extract this ZIP into the repository root (the same folder as Cargo.toml).
-2. Allow the included files to overwrite files with matching paths.
-3. Review `git diff`.
-4. Commit and push the changes to the `android` branch.
-5. Run the Android Build APK workflow again using workflow_dispatch.
+Changes:
+- crates/horizon-client/src/android/documents.rs
+  Uses the existing native_ime::pick_document() entry point and removes the
+  call to the missing platform::open_content_document_picker() symbol.
+- crates/horizon-client/src/content_files.rs
+  Restores extract_shader_archive() and extract_shader_archive_with_progress(),
+  including cancellation, extraction progress, wrapper-folder handling,
+  path traversal/symlink checks, and expanded-size limits.
 
-NOTE
-This is a source overlay, not a prebuilt APK. The two compiler errors reported in
-GitHub Actions are addressed in this archive, but a successful APK build still
-needs to be confirmed by a new Actions run.
+No package ID, application name, assets, signing configuration, or workflow
+configuration is changed.
+
+Validation performed: source symbol checks, patch whitespace checks, ZIP
+integrity. The Rust/Android build was not run in this environment because
+cargo/rustc are not installed; rerun the failed GitHub Actions workflow to
+confirm the native build.

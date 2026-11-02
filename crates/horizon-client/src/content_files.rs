@@ -205,6 +205,162 @@ pub fn validate_with_progress(
     }
     Ok(kind == Kind::Shaders && native_shader)
 }
+pub fn extract_shader_archive(
+    path: &Path,
+    destination: &Path,
+    cancelled: impl Fn() -> bool,
+) -> crate::Result<()> {
+    extract_shader_archive_with_progress(path, destination, cancelled, |_, _| {})
+}
+
+pub fn extract_shader_archive_with_progress(
+    path: &Path,
+    destination: &Path,
+    cancelled: impl Fn() -> bool,
+    mut progress: impl FnMut(u64, u64),
+) -> crate::Result<()> {
+    let mut created_destination = false;
+    let result = (|| -> crate::Result<()> {
+        let file = File::open(path)?;
+        let mut zip = zip::ZipArchive::new(file)?;
+        if zip.len() > 32768 || destination.exists() {
+            return Err("Shader archive or destination is invalid".into());
+        }
+        let mut prefix: Option<String> = None;
+        let entry_count = zip.len();
+        for i in 0..entry_count {
+            if cancelled() {
+                return Err("Import cancelled".into());
+            }
+            let entry = zip.by_index(i)?;
+            let raw = entry.name();
+            if !entry.is_dir()
+                && shader_source_file(raw)
+                && let Some(root) = shader_pack_prefix(raw)
+            {
+                let candidate = root.to_owned();
+                if prefix.as_ref().is_some_and(|old| old != &candidate) {
+                    return Err("Shader ZIP contains more than one pack folder".into());
+                }
+                prefix = Some(candidate);
+            }
+        }
+        let prefix = prefix
+            .as_deref()
+            .ok_or("Shader ZIP has no shaders folder")?;
+        let mut total_bytes = 0u64;
+        for i in 0..entry_count {
+            if cancelled() {
+                return Err("Import cancelled".into());
+            }
+            let entry = zip.by_index(i)?;
+            let raw = entry.name();
+            let relative = if prefix.is_empty() {
+                raw
+            } else if let Some(relative) = raw.strip_prefix(prefix) {
+                relative
+            } else {
+                continue;
+            };
+            if !entry.is_dir() && !relative.trim_end_matches('/').is_empty() {
+                total_bytes = total_bytes
+                    .checked_add(entry.size())
+                    .ok_or("Shader archive size overflow")?;
+            }
+        }
+        let total_steps = (entry_count as u64).saturating_add(total_bytes.max(1));
+        progress(entry_count as u64, total_steps);
+        fs::create_dir(destination)?;
+        created_destination = true;
+        let mut total = 0u64;
+        let mut processed_bytes = 0u64;
+        for i in 0..entry_count {
+            if cancelled() {
+                return Err("Import cancelled".into());
+            }
+            let mut entry = zip.by_index(i)?;
+            let raw = entry.name().to_owned();
+            let relative = if prefix.is_empty() {
+                raw.as_str()
+            } else if let Some(relative) = raw.strip_prefix(prefix) {
+                relative
+            } else {
+                progress(entry_count as u64 + processed_bytes, total_steps);
+                continue;
+            };
+            let relative = relative.trim_end_matches('/');
+            if relative.is_empty() {
+                progress(entry_count as u64 + processed_bytes, total_steps);
+                continue;
+            }
+            if relative.len() > 1024
+                || relative.contains(['\\', ':', '\0'])
+                || relative.chars().any(char::is_control)
+                || relative.starts_with('/')
+                || relative
+                    .split('/')
+                    .any(|part| part.is_empty() || part == "." || part == "..")
+                || entry.unix_mode().is_some_and(|mode| mode & 0o170000 == 0o120000)
+            {
+                return Err("Shader archive contains an unsafe path".into());
+            }
+            let relative_path = Path::new(relative);
+            if relative_path
+                .components()
+                .any(|part| !matches!(part, Component::Normal(_)))
+            {
+                return Err("Shader archive contains an unsafe path".into());
+            }
+            let target = destination.join(relative_path);
+            if entry.is_dir() || relative.ends_with('/') {
+                fs::create_dir_all(&target)?;
+                progress(entry_count as u64 + processed_bytes, total_steps);
+                continue;
+            }
+            total = total
+                .checked_add(entry.size())
+                .ok_or("Shader archive size overflow")?;
+            if total > MAX_EXPANDED {
+                return Err("Expanded shader archive exceeds 512 MiB".into());
+            }
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let mut output = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&target)?;
+            let expected = entry.size();
+            let mut actual = 0u64;
+            let mut buffer = [0u8; 65536];
+            loop {
+                if cancelled() {
+                    return Err("Import cancelled".into());
+                }
+                let count = entry.read(&mut buffer)?;
+                if count == 0 {
+                    break;
+                }
+                actual += count as u64;
+                processed_bytes = processed_bytes.saturating_add(count as u64);
+                progress(entry_count as u64 + processed_bytes, total_steps);
+                if actual > expected || actual > MAX_EXPANDED {
+                    return Err("Shader archive size mismatch".into());
+                }
+                output.write_all(&buffer[..count])?;
+            }
+            if actual != expected {
+                return Err("Incomplete shader archive entry".into());
+            }
+        }
+        progress(total_steps, total_steps);
+        Ok(())
+    })();
+    if result.is_err() && created_destination {
+        let _ = fs::remove_dir_all(destination);
+    }
+    result
+}
 pub fn copy_bounded(
     input: &mut impl Read,
     output: &mut impl io::Write,

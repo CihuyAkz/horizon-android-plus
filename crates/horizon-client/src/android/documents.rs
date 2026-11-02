@@ -332,9 +332,7 @@ pub fn begin_with_shader_mode(
         cache,
         shader_mode,
     });
-    if !crate::platform::open_content_document_picker()
-        && !crate::native_ime::pick_document()
-    {
+    if !crate::native_ime::pick_document() {
         picker_failed("Android document picker is unavailable");
         return Err("Android document picker is unavailable".into());
     }
