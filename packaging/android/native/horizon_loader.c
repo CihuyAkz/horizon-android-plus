@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,6 +19,7 @@
 
 static void *runtime_handle;
 static char runtime_path[PATH_MAX];
+static pthread_mutex_t runtime_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static int valid_id(const char *id) {
     if (!id || strncmp(id, "native-", 7) != 0) return 0;
@@ -78,46 +80,68 @@ static void *load_runtime(const char *base, const char *id) {
     return handle;
 }
 
+static int ensure_runtime_loaded(const char *base) {
+    if (!base || !*base) return 0;
+
+    // The DocumentsProvider can be queried from multiple binder threads before the
+    // NativeActivity is started. Initialize the selected runtime exactly once.
+    (void)pthread_mutex_lock(&runtime_mutex);
+    if (runtime_handle) {
+        (void)pthread_mutex_unlock(&runtime_mutex);
+        return 1;
+    }
+
+    int ready = 0;
+    char selected[128] = {0};
+    char fallback[128] = {0};
+    char marker[PATH_MAX];
+    int n = snprintf(marker, sizeof(marker), "%s/horizon-runtime-selection.txt", base);
+    if (n < 0 || (size_t)n >= sizeof(marker) || !read_id(marker, selected, sizeof(selected))) {
+        selected[0] = '\0';
+    }
+
+    n = snprintf(marker, sizeof(marker), "%s/horizon-runtime-default.txt", base);
+    if (n < 0 || (size_t)n >= sizeof(marker) || !read_id(marker, fallback, sizeof(fallback))) {
+        fallback[0] = '\0';
+    }
+
+    if (selected[0] && load_runtime(base, selected)) {
+        ready = 1;
+    } else if (fallback[0] && (!selected[0] || strcmp(selected, fallback) != 0)
+            && load_runtime(base, fallback)) {
+        n = snprintf(marker, sizeof(marker), "%s/horizon-runtime-selection.txt", base);
+        if (n >= 0 && (size_t)n < sizeof(marker)) write_id(marker, fallback);
+        ready = 1;
+    }
+
+    if (!ready) LOGE("No compatible Horizon build is available in %s", base);
+    (void)pthread_mutex_unlock(&runtime_mutex);
+    return ready;
+}
+
+static void throw_document_error(JNIEnv *env, const char *message) {
+    if ((*env)->ExceptionCheck(env)) return;
+    jclass error_class = (*env)->FindClass(env, "java/io/FileNotFoundException");
+    if (error_class) {
+        (void)(*env)->ThrowNew(env, error_class, message);
+        (*env)->DeleteLocalRef(env, error_class);
+    }
+}
+
 __attribute__((visibility("default")))
 void ANativeActivity_onCreate(ANativeActivity *activity, void *saved_state, size_t saved_state_size) {
     if (!activity || !activity->internalDataPath) {
         LOGE("NativeActivity has no internal data path");
         return;
     }
-    char selected[128] = {0};
-    char marker[PATH_MAX];
-    int marker_len = snprintf(marker, sizeof(marker), "%s/horizon-runtime-selection.txt", activity->internalDataPath);
-    if (marker_len >= 0 && (size_t)marker_len < sizeof(marker) && !read_id(marker, selected, sizeof(selected))) {
-        selected[0] = '\0';
-    }
-    if (!selected[0]) {
-        marker_len = snprintf(marker, sizeof(marker), "%s/horizon-runtime-default.txt", activity->internalDataPath);
-        if (marker_len >= 0 && (size_t)marker_len < sizeof(marker) && !read_id(marker, selected, sizeof(selected))) {
-            selected[0] = '\0';
-        }
-    }
-    if (!selected[0] || !load_runtime(activity->internalDataPath, selected)) {
-        LOGE("Selected Horizon runtime unavailable; trying APK default");
-        char fallback[128] = {0};
-        marker_len = snprintf(marker, sizeof(marker), "%s/horizon-runtime-default.txt", activity->internalDataPath);
-        if (marker_len >= 0 && (size_t)marker_len < sizeof(marker) && !read_id(marker, fallback, sizeof(fallback))) {
-            fallback[0] = '\0';
-        }
-        if (!fallback[0] || (selected[0] && strcmp(fallback, selected) == 0) ||
-            !load_runtime(activity->internalDataPath, fallback)) {
-            LOGE("No compatible Horizon runtime could be loaded");
-            return;
-        }
-        marker_len = snprintf(marker, sizeof(marker), "%s/horizon-runtime-selection.txt", activity->internalDataPath);
-        if (marker_len >= 0 && (size_t)marker_len < sizeof(marker)) write_id(marker, fallback);
-    }
+    if (!ensure_runtime_loaded(activity->internalDataPath)) return;
     typedef void (*activity_create_fn)(ANativeActivity *, void *, size_t);
     activity_create_fn create = (activity_create_fn)dlsym(runtime_handle, "ANativeActivity_onCreate");
     if (!create) {
         LOGE("Runtime %s does not export ANativeActivity_onCreate: %s", runtime_path, dlerror());
         return;
     }
-    LOGI("Starting Android Horizon runtime: %s", runtime_path);
+    LOGI("Starting Android Horizon build: %s", runtime_path);
     create(activity, saved_state, saved_state_size);
 }
 
@@ -145,4 +169,47 @@ Java_dev_horizon_android_HorizonActivity_nativeDocumentResult(JNIEnv *env, jobje
     typedef void (*document_fn)(JNIEnv *, jobject, jint, jint, jstring);
     document_fn call = (document_fn)dlsym(runtime_handle, "Java_dev_horizon_android_HorizonActivity_nativeDocumentResult");
     if (call) call(env, thiz, request, result, uri);
+}
+
+
+JNIEXPORT jstring JNICALL
+Java_dev_horizon_android_HorizonDocumentsProvider_nativeCall(
+        JNIEnv *env, jclass clazz, jstring home, jstring operation, jstring id, jstring arg) {
+    const char *base = (*env)->GetStringUTFChars(env, home, NULL);
+    if (!base) return NULL;
+    const int ready = ensure_runtime_loaded(base);
+    (*env)->ReleaseStringUTFChars(env, home, base);
+    if (!ready) {
+        throw_document_error(env, "Horizon build is not initialized. Open Horizon and try again.");
+        return NULL;
+    }
+    typedef jstring (*document_call_fn)(JNIEnv *, jclass, jstring, jstring, jstring, jstring);
+    document_call_fn call = (document_call_fn)dlsym(
+            runtime_handle, "Java_dev_horizon_android_HorizonDocumentsProvider_nativeCall");
+    if (!call) {
+        throw_document_error(env, "The selected Horizon build does not provide file access support.");
+        return NULL;
+    }
+    return call(env, clazz, home, operation, id, arg);
+}
+
+JNIEXPORT jint JNICALL
+Java_dev_horizon_android_HorizonDocumentsProvider_nativeOpen(
+        JNIEnv *env, jclass clazz, jstring home, jstring id, jstring mode) {
+    const char *base = (*env)->GetStringUTFChars(env, home, NULL);
+    if (!base) return -1;
+    const int ready = ensure_runtime_loaded(base);
+    (*env)->ReleaseStringUTFChars(env, home, base);
+    if (!ready) {
+        throw_document_error(env, "Horizon build is not initialized. Open Horizon and try again.");
+        return -1;
+    }
+    typedef jint (*document_open_fn)(JNIEnv *, jclass, jstring, jstring, jstring);
+    document_open_fn call = (document_open_fn)dlsym(
+            runtime_handle, "Java_dev_horizon_android_HorizonDocumentsProvider_nativeOpen");
+    if (!call) {
+        throw_document_error(env, "The selected Horizon build does not provide file access support.");
+        return -1;
+    }
+    return call(env, clazz, home, id, mode);
 }

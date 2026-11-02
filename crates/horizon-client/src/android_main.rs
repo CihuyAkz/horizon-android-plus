@@ -111,7 +111,7 @@ pub extern "system" fn native_web_command(
     action: i32,
     payload: JString<'_>,
 ) {
-    if !(1..=17).contains(&action) { return; }
+    if !(1..=18).contains(&action) { return; }
     let value = if payload.is_null() {
         String::new()
     } else {

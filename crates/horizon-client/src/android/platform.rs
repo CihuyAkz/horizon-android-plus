@@ -5,6 +5,10 @@ use jni::{
     objects::{GlobalRef, JObject, JValue},
 };
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static WEB_GAME_LOADING_PENDING: AtomicBool = AtomicBool::new(false);
+
 thread_local! {
     static EDIT: RefCell<Option<String>> = const { RefCell::new(None) };
     static MULTILINE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -210,6 +214,30 @@ pub(crate) fn set_web_launcher_visible(visible: bool) {
     });
 }
 
+pub(crate) fn begin_web_game_loading() {
+    WEB_GAME_LOADING_PENDING.store(true, Ordering::Release);
+}
+
+pub(crate) fn finish_web_game_loading() {
+    if !WEB_GAME_LOADING_PENDING.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    with_context(|env, activity| {
+        env.call_method(activity, "finishGameLoading", "()V", &[])?;
+        Ok(())
+    });
+}
+
+pub(crate) fn cancel_web_game_loading() {
+    if !WEB_GAME_LOADING_PENDING.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    with_context(|env, activity| {
+        env.call_method(activity, "cancelGameLoading", "()V", &[])?;
+        Ok(())
+    });
+}
+
 pub(crate) fn with_context<R>(
     f: impl FnOnce(&mut JNIEnv<'_>, &JObject<'_>) -> jni::errors::Result<R>,
 ) -> Option<R> {
@@ -286,6 +314,13 @@ pub fn set_orientation(orientation: crate::catalog::Orientation) {
             "(I)V",
             &[JValue::Int(orientation.android_value())],
         )?;
+        Ok(())
+    });
+}
+
+pub fn set_launcher_orientation() {
+    with_context(|env, activity| {
+        env.call_method(activity, "applyLauncherOrientation", "()V", &[])?;
         Ok(())
     });
 }

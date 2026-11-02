@@ -16057,6 +16057,13 @@ impl ApplicationHandler for Game<'_> {
                     self.tick_world_icon();
                     let ticked = Instant::now();
                     let rendered = self.render()?;
+                    #[cfg(target_os = "android")]
+                    if rendered {
+                        // If resource loading completed before its own first
+                        // redraw, the first game frame safely releases the
+                        // launch overlay instead of leaving it above gameplay.
+                        crate::platform::finish_web_game_loading();
+                    }
                     self.apply_cursor_icon();
                     if let Some(threshold) = self.options.spikes
                         && let Some(r) = self.renderer.as_ref()
@@ -18192,12 +18199,16 @@ impl Loading {
             self.started.elapsed().as_secs_f32(),
             self.settings.file.double("panoramaScrollSpeed") as f32,
         );
+        let mut frame_presented = false;
         if let Some(renderer) = &mut self.renderer {
             match renderer.render(&frame) {
-                Ok(true) if self.gui.is_some() && self.menu.pending.is_none() => {
-                    self.menu.perf.title_shown()
+                Ok(true) => {
+                    frame_presented = true;
+                    if self.gui.is_some() && self.menu.pending.is_none() {
+                        self.menu.perf.title_shown();
+                    }
                 }
-                Ok(_) => {}
+                Ok(false) => {}
                 Err(e) => log::warn!("Horizon: loading screen frame failed: {e}"),
             }
             if let Some(frame_ms) = frame_ms {
@@ -18212,8 +18223,10 @@ impl Loading {
                 renderer.gpu_times.clear();
             }
         }
-        if !self.shown {
+        if frame_presented && !self.shown {
             self.shown = true;
+            #[cfg(target_os = "android")]
+            crate::platform::finish_web_game_loading();
             log::info!(
                 "Horizon: loading screen shown after {} ms",
                 self.started.elapsed().as_millis()
@@ -18419,6 +18432,7 @@ impl ApplicationHandler for App {
                 App::Loading(loading) => loading.error.as_ref(),
             };
             if let Some(error) = error {
+                crate::platform::cancel_web_game_loading();
                 log::error!("Horizon: {error}");
                 let home = crate::backend::game_home();
                 crate::diagnostics::record_error(&error.to_string());

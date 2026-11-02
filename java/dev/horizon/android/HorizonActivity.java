@@ -3,6 +3,8 @@ package dev.horizon.android;
 import android.app.Activity;
 import android.app.Dialog;
 import android.content.Intent;
+import android.content.pm.ActivityInfo;
+import android.content.res.Configuration;
 import android.graphics.Color;
 import android.graphics.drawable.ColorDrawable;
 import android.net.Uri;
@@ -23,6 +25,9 @@ import android.webkit.WebViewClient;
 public final class HorizonActivity extends android.app.NativeActivity {
     private static final int REQUEST_DOCUMENT_IMPORT = 4101;
     private static final int REQUEST_WEB_FILE = 4102;
+    private static final String DISPLAY_PREFERENCES = "horizon_display_preferences";
+    private static final String LAUNCHER_ORIENTATION = "launcher_orientation";
+    private static final String GAME_ORIENTATION = "game_orientation";
 
     static { System.loadLibrary("horizon_android"); }
 
@@ -33,10 +38,56 @@ public final class HorizonActivity extends android.app.NativeActivity {
     private WebView webView;
     private Dialog launcherDialog;
     private ValueCallback<Uri[]> webFileCallback;
+    private boolean actualGameVisible;
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        applyRequestedOrientation();
         createHtmlLauncher();
+    }
+
+    private boolean isSupportedOrientation(String value) {
+        return "portrait".equals(value) || "landscape".equals(value)
+                || "reverse-portrait".equals(value) || "reverse-landscape".equals(value)
+                || "auto".equals(value);
+    }
+
+    private int androidOrientation(String value) {
+        if ("landscape".equals(value)) return ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE;
+        if ("reverse-landscape".equals(value)) return ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE;
+        if ("reverse-portrait".equals(value)) return ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT;
+        if ("auto".equals(value)) return ActivityInfo.SCREEN_ORIENTATION_FULL_USER;
+        return ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT;
+    }
+
+    private void applyRequestedOrientation() {
+        android.content.SharedPreferences preferences = getSharedPreferences(
+                DISPLAY_PREFERENCES, MODE_PRIVATE);
+        String key = actualGameVisible ? GAME_ORIENTATION : LAUNCHER_ORIENTATION;
+        String fallback = actualGameVisible ? "landscape" : "portrait";
+        String value = preferences.getString(key, fallback);
+        setRequestedOrientation(androidOrientation(
+                isSupportedOrientation(value) ? value : fallback));
+    }
+
+    /** Restores the launcher orientation when the native launcher surface is recreated. */
+    public void applyLauncherOrientation() {
+        runOnUiThread(() -> {
+            actualGameVisible = false;
+            applyRequestedOrientation();
+        });
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        applyRequestedOrientation();
+    }
+
+    @Override public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        if (launcherDialog != null && launcherDialog.isShowing()) {
+            configureLauncherDialogWindow();
+        }
     }
 
     private void createHtmlLauncher() {
@@ -130,6 +181,8 @@ public final class HorizonActivity extends android.app.NativeActivity {
     /** Called from Rust when the actual game takes over or returns to the launcher. */
     public void setWebLauncherVisible(boolean visible) {
         runOnUiThread(() -> {
+            actualGameVisible = !visible;
+            applyRequestedOrientation();
             if (launcherDialog == null || webView == null) return;
             if (visible) {
                 webView.setVisibility(View.VISIBLE);
@@ -238,6 +291,28 @@ public final class HorizonActivity extends android.app.NativeActivity {
         @JavascriptInterface public String status() {
             String result = nativeWebStatus();
             return result == null ? "{}" : result;
+        }
+
+        @JavascriptInterface public String orientationSettings() {
+            android.content.SharedPreferences preferences = getSharedPreferences(
+                    DISPLAY_PREFERENCES, MODE_PRIVATE);
+            org.json.JSONObject result = new org.json.JSONObject();
+            try {
+                result.put("launcherOrientation", preferences.getString(LAUNCHER_ORIENTATION, "portrait"));
+                result.put("gameOrientation", preferences.getString(GAME_ORIENTATION, "landscape"));
+                return result.toString();
+            } catch (org.json.JSONException ignored) {
+                return "{\"launcherOrientation\":\"portrait\",\"gameOrientation\":\"landscape\"}";
+            }
+        }
+
+        @JavascriptInterface public void setOrientations(String launcher, String game) {
+            if (!isSupportedOrientation(launcher) || !isSupportedOrientation(game)) return;
+            getSharedPreferences(DISPLAY_PREFERENCES, MODE_PRIVATE).edit()
+                    .putString(LAUNCHER_ORIENTATION, launcher)
+                    .putString(GAME_ORIENTATION, game)
+                    .apply();
+            runOnUiThread(HorizonActivity.this::applyRequestedOrientation);
         }
 
         @JavascriptInterface public String appVersion() {

@@ -70,6 +70,16 @@ pub fn validate(
     name: &str,
     cancelled: impl Fn() -> bool,
 ) -> crate::Result<bool> {
+    validate_with_progress(path, kind, name, cancelled, |_, _| {})
+}
+
+pub fn validate_with_progress(
+    path: &Path,
+    kind: Kind,
+    name: &str,
+    cancelled: impl Fn() -> bool,
+    mut progress: impl FnMut(u64, u64),
+) -> crate::Result<bool> {
     if !plain_name(name) || !kind.accepts(name) {
         return Err(
             "Choose a ZIP pack, .hshader shader pack or sandboxed .hmod matching this folder"
@@ -95,7 +105,21 @@ pub fn validate(
     let mut manifest = false;
     let mut wasm = false;
     let mut buffer = [0u8; 65536];
-    for i in 0..zip.len() {
+    let entry_count = zip.len();
+    let mut total_bytes = 0u64;
+    for i in 0..entry_count {
+        if cancelled() {
+            return Err("Import cancelled".into());
+        }
+        total_bytes = total_bytes
+            .checked_add(zip.by_index(i)?.size())
+            .ok_or("Archive size overflow")?;
+        if total_bytes > MAX_EXPANDED || kind == Kind::Mods && total_bytes > 64 << 20 {
+            return Err("Expanded archive exceeds 512 MiB".into());
+        }
+    }
+    let mut processed_bytes = 0u64;
+    for i in 0..entry_count {
         if cancelled() {
             return Err("Import cancelled".into());
         }
@@ -143,6 +167,8 @@ pub fn validate(
                 break;
             }
             actual += n as u64;
+            processed_bytes = processed_bytes.saturating_add(n as u64);
+            progress(processed_bytes, total_bytes.max(1));
             if raw == "pack.mcmeta" {
                 metadata.extend_from_slice(&buffer[..n]);
             }
@@ -160,6 +186,11 @@ pub fn validate(
         {
             return Err("Resource pack metadata has no pack object".into());
         }
+    }
+    if total_bytes == 0 {
+        progress(1, 1);
+    } else {
+        progress(total_bytes, total_bytes);
     }
     if !match kind {
         Kind::Packs => pack,
@@ -242,6 +273,15 @@ pub fn extract_shader_archive(
     destination: &Path,
     cancelled: impl Fn() -> bool,
 ) -> crate::Result<()> {
+    extract_shader_archive_with_progress(path, destination, cancelled, |_, _| {})
+}
+
+pub fn extract_shader_archive_with_progress(
+    path: &Path,
+    destination: &Path,
+    cancelled: impl Fn() -> bool,
+    mut progress: impl FnMut(u64, u64),
+) -> crate::Result<()> {
     let result = (|| -> crate::Result<()> {
         let file = File::open(path)?;
         let mut zip = zip::ZipArchive::new(file)?;
@@ -249,7 +289,8 @@ pub fn extract_shader_archive(
             return Err("Shader archive or destination is invalid".into());
         }
         let mut prefix: Option<String> = None;
-        for i in 0..zip.len() {
+        let entry_count = zip.len();
+        for i in 0..entry_count {
             if cancelled() {
                 return Err("Import cancelled".into());
             }
@@ -269,9 +310,32 @@ pub fn extract_shader_archive(
         let prefix = prefix
             .as_deref()
             .ok_or("Shader ZIP has no shaders folder")?;
+        let mut total_bytes = 0u64;
+        for i in 0..entry_count {
+            if cancelled() {
+                return Err("Import cancelled".into());
+            }
+            let entry = zip.by_index(i)?;
+            let raw = entry.name();
+            let relative = if prefix.is_empty() {
+                raw
+            } else if let Some(relative) = raw.strip_prefix(prefix) {
+                relative
+            } else {
+                continue;
+            };
+            if !entry.is_dir() && !relative.trim_end_matches('/').is_empty() {
+                total_bytes = total_bytes
+                    .checked_add(entry.size())
+                    .ok_or("Shader archive size overflow")?;
+            }
+        }
+        let total_steps = (entry_count as u64).saturating_add(total_bytes.max(1));
+        progress(entry_count as u64, total_steps);
         fs::create_dir(destination)?;
         let mut total = 0u64;
-        for i in 0..zip.len() {
+        let mut processed_bytes = 0u64;
+        for i in 0..entry_count {
             if cancelled() {
                 return Err("Import cancelled".into());
             }
@@ -282,10 +346,12 @@ pub fn extract_shader_archive(
             } else if let Some(relative) = raw.strip_prefix(prefix) {
                 relative
             } else {
+                progress(entry_count as u64 + processed_bytes, total_steps);
                 continue;
             };
             let relative = relative.trim_end_matches('/');
             if relative.is_empty() {
+                progress(entry_count as u64 + processed_bytes, total_steps);
                 continue;
             }
             if relative.len() > 1024
@@ -308,6 +374,7 @@ pub fn extract_shader_archive(
             let target = destination.join(relative_path);
             if entry.is_dir() || relative.ends_with('/') {
                 fs::create_dir_all(&target)?;
+                progress(entry_count as u64 + processed_bytes, total_steps);
                 continue;
             }
             total = total
@@ -335,6 +402,8 @@ pub fn extract_shader_archive(
                     break;
                 }
                 actual += count as u64;
+                processed_bytes = processed_bytes.saturating_add(count as u64);
+                progress(entry_count as u64 + processed_bytes, total_steps);
                 if actual > expected || actual > MAX_EXPANDED {
                     return Err("Shader archive size mismatch".into());
                 }
@@ -344,6 +413,7 @@ pub fn extract_shader_archive(
                 return Err("Incomplete shader archive entry".into());
             }
         }
+        progress(total_steps, total_steps);
         Ok(())
     })();
     if result.is_err() {
@@ -414,6 +484,11 @@ mod tests {
             validate(&path, Kind::Packs, "Test.zip", || false).unwrap(),
             false
         );
+        let mut validation_progress = Vec::new();
+        validate_with_progress(&path, Kind::Packs, "Test.zip", || false, |done, total| {
+            validation_progress.push((done, total));
+        }).unwrap();
+        assert!(validation_progress.last().is_some_and(|(done, total)| done == total));
         assert!(validate(&path, Kind::Packs, "Test.zip", || true).is_err());
         assert!(validate(&path, Kind::Packs, "../Test.zip", || false).is_err());
         for name in ["../outside", "/absolute", "C:/outside", "folder\\outside"] {
@@ -464,7 +539,11 @@ mod tests {
         std::fs::write(&archive_path, bytes).unwrap();
         assert!(!validate(&archive_path, Kind::Shaders, "Example.zip", || false).unwrap());
         let destination = dir.join("staged-pack");
-        extract_shader_archive(&archive_path, &destination, || false).unwrap();
+        let mut extraction_progress = Vec::new();
+        extract_shader_archive_with_progress(&archive_path, &destination, || false, |done, total| {
+            extraction_progress.push((done, total));
+        }).unwrap();
+        assert!(extraction_progress.last().is_some_and(|(done, total)| done == total));
         assert_eq!(
             std::fs::read(destination.join("shaders/final.fsh")).unwrap(),
             b"void main() {}"

@@ -261,6 +261,14 @@ impl Config {
         Ok(())
     }
 
+    pub fn set_instance_version_for(&mut self, id: &str, version: Option<&str>) -> Result<(), String> {
+        let Some(instance) = self.instances.iter_mut().find(|instance| instance.id == id) else {
+            return Err("That instance no longer exists".into());
+        };
+        instance.version = version.map(str::to_owned);
+        Ok(())
+    }
+
     pub fn remove_instance(&mut self, id: &str) -> Result<(), String> {
         if id == "default" { return Err("The default instance cannot be removed".into()); }
         let Some(index) = self.instances.iter().position(|instance| instance.id == id) else {

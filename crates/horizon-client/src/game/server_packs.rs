@@ -75,6 +75,8 @@ impl ServerPackState {
             .filter_map(|n| n.toast.as_ref())
             .chain(self.load_fail.as_ref())
             .chain(self.chunk_io.iter().flatten())
+            .chain(self.shader_progress.as_ref())
+            .chain(self.shader_notifications.iter().flatten())
             .filter_map(|t| t.slot)
     }
 }
@@ -99,6 +101,10 @@ pub(super) struct ServerPackState {
     /// `SystemToastId.LOW_DISK_SPACE`, `CHUNK_LOAD_FAILURE` and `CHUNK_SAVE_FAILURE`:
     /// the toasts the integrated server's chunk IO reports add (`chunk_io`).
     pub(super) chunk_io: [Option<SystemToast>; 3],
+    /// The local shader importer runs on its own worker while gameplay continues.
+    shader_progress: Option<SystemToast>,
+    shader_progress_message: Option<String>,
+    shader_notifications: Vec<Option<SystemToast>>,
 }
 /// `DownloadedPackSource.createDownloadNotifier`: one batch's progress in its
 /// own `SystemToast`.
@@ -496,6 +502,60 @@ impl Game<'_> {
     pub(super) fn draw_pack_toasts(&mut self, batch: &mut HudBatch, hidden: bool) {
         let multiplier = f64::from(self.settings.notification_display_time);
         self.add_chunk_io_toasts();
+        let shader_progress: Option<(bool, bool, String, u8)> = {
+            #[cfg(target_os = "android")]
+            {
+                crate::documents::progress_snapshot().map(|progress| {
+                    (progress.active, progress.convert, progress.stage, progress.percent)
+                })
+            }
+            #[cfg(not(target_os = "android"))]
+            { None }
+        };
+        let shader_notifications: Vec<(String, String)> = {
+            #[cfg(target_os = "android")]
+            {
+                crate::documents::take_game_notifications()
+                    .into_iter()
+                    .map(|notification| (notification.title, notification.message))
+                    .collect()
+            }
+            #[cfg(not(target_os = "android"))]
+            { Vec::new() }
+        };
+        {
+            let packs = &mut self.server_packs;
+            if let Some((true, convert, stage, percent)) = shader_progress.as_ref() {
+                let title = if *convert { "Converting shader pack" } else { "Importing shader pack" };
+                let rounded = (*percent / 5) * 5;
+                let message = format!("{} · {}%", stage, rounded);
+                if packs.shader_progress_message.as_deref() != Some(message.as_str()) {
+                    match packs.shader_progress.as_mut() {
+                        Some(toast) => toast.reset(title.into(), Some(message.clone())),
+                        None => {
+                            packs.shader_progress = Some(
+                                SystemToast::new(title.into(), Some(message.clone()))
+                                    .with_display_time(86_400_000.0),
+                            );
+                        }
+                    }
+                    packs.shader_progress_message = Some(message);
+                }
+            } else {
+                if let Some(toast) = packs.shader_progress.as_mut() {
+                    toast.force_hide();
+                }
+                packs.shader_progress_message = None;
+            }
+            for (title, message) in shader_notifications {
+                packs.shader_notifications.push(Some(
+                    SystemToast::new(title, Some(message)).with_display_time(9_000.0),
+                ));
+            }
+            while packs.shader_notifications.len() > 4 {
+                packs.shader_notifications.remove(0);
+            }
+        }
         let mut used = self.toast_slots_used();
         let packs = &mut self.server_packs;
         for slot_toast in packs
@@ -504,6 +564,8 @@ impl Game<'_> {
             .map(|n| &mut n.toast)
             .chain(std::iter::once(&mut packs.load_fail))
             .chain(packs.chunk_io.iter_mut())
+            .chain(std::iter::once(&mut packs.shader_progress))
+            .chain(packs.shader_notifications.iter_mut())
         {
             let Some(toast) = slot_toast else {
                 continue;
@@ -528,6 +590,10 @@ impl Game<'_> {
             if let (false, Some(slot)) = (hidden, toast.slot) {
                 toast.draw(&self.gui.atlas, batch, 32.0 * slot as f32);
             }
+        }
+        packs.shader_notifications.retain(|notification| notification.is_some());
+        if packs.shader_progress.is_none() {
+            packs.shader_progress_message = None;
         }
     }
     /// A left click on the prompt: its answer when it hit a button.

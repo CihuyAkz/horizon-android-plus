@@ -65,6 +65,7 @@ fn runtime_versions(home: &std::path::Path, loaded: &str) -> Vec<serde_json::Val
             versions.push(serde_json::json!({
                 "id": id,
                 "label": label,
+                "commit": manifest.commit.clone(),
                 "installed": true,
                 "current": current,
                 "abi": manifest.abi.clone(),
@@ -79,6 +80,7 @@ fn runtime_versions(home: &std::path::Path, loaded: &str) -> Vec<serde_json::Val
             versions.push(serde_json::json!({
                 "id": manifest.id.clone(),
                 "label": format!("{} · {}", manifest.id, manifest.commit),
+                "commit": manifest.commit.clone(),
                 "installed": true,
                 "current": manifest.id.as_str() == loaded,
                 "abi": manifest.abi.clone(),
@@ -142,6 +144,7 @@ pub(super) struct Launcher {
     login: login::Login,
     session_worker: Option<mpsc::Receiver<std::result::Result<Option<PathBuf>, String>>>,
     session_ready: bool,
+    game_loading_requested: bool,
     focus: Option<usize>,
     drawer_open: bool,
     sidebar_scroll: f32,
@@ -234,6 +237,8 @@ impl Launcher {
             .unwrap_or_else(|_| crate::android_runtime_version()).trim().to_owned();
         let loaded_runtime = std::fs::read_to_string(self.home.join("horizon-runtime-selection.txt"))
             .unwrap_or_else(|_| apk_runtime.clone()).trim().to_owned();
+        let followed_runtime = std::fs::read_to_string(self.home.join("horizon-runtime-follow.txt"))
+            .unwrap_or_else(|_| apk_runtime.clone()).trim().to_owned();
         let content_operation = crate::documents::take_web_result().map(|(id, kind, message)| {
             serde_json::json!({
                 "id": id,
@@ -257,11 +262,27 @@ impl Launcher {
                 "canKeepBoth": kind != horizon_client::content_files::Kind::Mods,
             })
         });
+        let content_progress = crate::documents::progress_snapshot().map(|progress| {
+            serde_json::json!({
+                "kind": match progress.kind {
+                    horizon_client::content_files::Kind::Mods => "mods",
+                    horizon_client::content_files::Kind::Packs => "resourcepacks",
+                    horizon_client::content_files::Kind::Shaders => "shaders",
+                },
+                "fileName": progress.file_name,
+                "stage": progress.stage,
+                "percent": progress.percent,
+                "active": progress.active,
+                "convert": progress.convert,
+                "waitingForChoice": progress.waiting_for_choice,
+            })
+        });
         let value = serde_json::json!({
             "connected": true,
             "version": horizon_core::VANILLA_VERSION,
             "runtimeVersion": loaded_runtime,
             "apkRuntimeVersion": apk_runtime,
+            "followedRuntimeVersion": followed_runtime,
             "runtimeAbi": crate::android_runtime_abi(),
             "runtimeVersions": runtime_versions(&self.home, &loaded_runtime),
             "upstreamNightly": crate::release_feed::status(&self.home, crate::android_runtime_abi()),
@@ -321,6 +342,7 @@ impl Launcher {
             "worlds": worlds,
             "operation": content_operation,
             "conflict": content_conflict,
+            "contentProgress": content_progress,
         });
         *WEB_STATUS.get_or_init(|| Mutex::new(String::new()))
             .lock().unwrap_or_else(|error| error.into_inner()) = value.to_string();
@@ -441,7 +463,15 @@ impl Launcher {
         for (action, payload) in crate::take_web_commands() {
             let result: Result<()> = (|| {
                 match action {
-                1 => self.action(events),
+                1 => {
+                    self.game_loading_requested = payload == "loading";
+                    let result = self.action(events);
+                    if result.is_err() && self.game_loading_requested {
+                        self.game_loading_requested = false;
+                        crate::platform::cancel_web_game_loading();
+                    }
+                    result
+                },
                 2 => {
                     self.login.start(&self.catalog.config.microsoft_client_id);
                     self.login.hide();
@@ -510,12 +540,28 @@ impl Launcher {
                         .map_err(|error| error.to_string())?;
                     let name = request.get("name").and_then(serde_json::Value::as_str)
                         .ok_or_else(|| "Missing instance name".to_string())?;
-                    self.catalog.config.create_instance(name)?;
+                    let version = request.get("version").and_then(serde_json::Value::as_str)
+                        .map(str::trim).filter(|value| !value.is_empty());
+                    if let Some(version) = version {
+                        if !installed_runtime(&self.home, version) {
+                            return Err("That Horizon build is not installed or is incompatible with this device".into());
+                        }
+                    }
+                    let id = self.catalog.config.create_instance(name)?;
+                    if let Some(version) = version {
+                        self.catalog.config.set_instance_version_for(&id, Some(version))?;
+                    }
                     let game_home = self.catalog.config.game_home(&self.home);
                     std::fs::create_dir_all(&game_home)?;
                     crate::backend::set_game_home(game_home.clone());
                     self.catalog.config.save(&self.home)?;
                     self.catalog.refresh(&self.home);
+                    self.error = None;
+                    self.catalog.status = if let Some(version) = version {
+                        format!("Instance created with Horizon build {version}")
+                    } else {
+                        "Instance created and set to follow the latest compatible build".into()
+                    };
                     Ok(())
                 }
                 13 => {
@@ -525,6 +571,8 @@ impl Launcher {
                     crate::backend::set_game_home(game_home.clone());
                     self.catalog.config.save(&self.home)?;
                     self.catalog.refresh(&self.home);
+                    self.error = None;
+                    self.catalog.status = "Active Instance changed".into();
                     Ok(())
                 }
                 14 => {
@@ -532,10 +580,14 @@ impl Launcher {
                     if version.is_empty() {
                         self.catalog.config.set_instance_version(None)?;
                         self.catalog.config.save(&self.home)?;
+                        self.error = None;
+                        self.catalog.status = "Active Instance follows the latest installed Horizon build".into();
                         Ok(())
                     } else if installed_runtime(&self.home, version) {
                         self.catalog.config.set_instance_version(Some(version))?;
                         self.catalog.config.save(&self.home)?;
+                        self.error = None;
+                        self.catalog.status = format!("Active Instance build preference saved: {version}");
                         Ok(())
                     } else {
                         Err("That Android Horizon build is not installed or is incompatible with this device".into())
@@ -574,6 +626,28 @@ impl Launcher {
                 }
                 17 => {
                     crate::release_feed::refresh();
+                    Ok(())
+                }
+                18 => {
+                    let request: serde_json::Value = serde_json::from_str(&payload)
+                        .map_err(|error| error.to_string())?;
+                    let id = request.get("id").and_then(serde_json::Value::as_str)
+                        .ok_or_else(|| "Missing instance ID".to_string())?;
+                    let version = request.get("version").and_then(serde_json::Value::as_str)
+                        .filter(|value| !value.trim().is_empty());
+                    if let Some(version) = version {
+                        if !installed_runtime(&self.home, version) {
+                            return Err("That Horizon build is not installed or is incompatible with this device".into());
+                        }
+                    }
+                    self.catalog.config.set_instance_version_for(id, version)?;
+                    self.catalog.config.save(&self.home)?;
+                    self.error = None;
+                    self.catalog.status = if let Some(version) = version {
+                        format!("Horizon build preference saved for {id}: {version}")
+                    } else {
+                        format!("Instance {id} follows the latest installed Horizon build")
+                    };
                     Ok(())
                 }
                     _ => Ok(()),
@@ -625,6 +699,7 @@ impl Launcher {
             login: login::Login::new(),
             session_worker: None,
             session_ready: false,
+            game_loading_requested: false,
             focus: None,
             drawer_open: false,
             sidebar_scroll: 0.0,
@@ -637,6 +712,7 @@ impl Launcher {
         if !horizon_client::android_runtime::take_launcher_return() {
             return;
         }
+        self.game_loading_requested = false;
         if let Some(mut game) = self.game.take() {
             game.exiting(events);
             drop(game);
@@ -690,7 +766,7 @@ impl Launcher {
     }
 
     fn open(&mut self, events: &ActiveEventLoop) -> Result<()> {
-        crate::platform::set_orientation(self.catalog.config.orientation);
+        crate::platform::set_launcher_orientation();
         self.configure_screen();
         crate::display::set_scale(self.catalog.config.render_scale);
         horizon_client::android_runtime::configure_gpu(false);
@@ -734,11 +810,28 @@ impl Launcher {
     }
 
     fn action(&mut self, events: &ActiveEventLoop) -> Result<()> {
-        if self.worker.is_some() || self.session_worker.is_some() {
+        if self.worker.is_some() {
+            if self.game_loading_requested {
+                self.game_loading_requested = false;
+                crate::platform::cancel_web_game_loading();
+            }
+            return Ok(());
+        }
+        if self.session_worker.is_some() {
             return Ok(());
         }
         if self.login.pending() {
+            if self.game_loading_requested {
+                self.game_loading_requested = false;
+                crate::platform::cancel_web_game_loading();
+            }
             return Ok(());
+        }
+        if crate::documents::shader_conflict() {
+            return Err(
+                "Resolve the pending content file conflict in Horizon before launching the game"
+                    .into(),
+            );
         }
         crate::configure_input_mode(self.catalog.config.input_host);
         crate::device_runtime::configure(self.catalog.config.device);
@@ -905,7 +998,13 @@ impl ApplicationHandler for Launcher {
             self.configure_screen();
         }
         if let Some(game) = &mut self.game {
+            let first_game_frame = self.game_loading_requested
+                && matches!(&event, WindowEvent::RedrawRequested);
             game.window_event(events, id, event);
+            if first_game_frame {
+                self.game_loading_requested = false;
+                crate::platform::finish_web_game_loading();
+            }
             self.restore_launcher(events);
             return;
         }
@@ -1053,6 +1152,10 @@ impl ApplicationHandler for Launcher {
             if let Err(error) = result {
                 self.fail(error);
             }
+            if self.game_loading_requested {
+                self.game_loading_requested = false;
+                crate::platform::cancel_web_game_loading();
+            }
         }
         for out in crate::platform::poll() {
             if matches!(out, horizon_client::osk::Output::Enter) {
@@ -1083,9 +1186,19 @@ impl ApplicationHandler for Launcher {
                     self.session_ready = true;
                     if let Err(e) = self.action(events) {
                         self.fail(e);
+                        if self.game_loading_requested {
+                            self.game_loading_requested = false;
+                            crate::platform::cancel_web_game_loading();
+                        }
                     }
                 }
-                Err(e) => self.fail(e),
+                Err(e) => {
+                    self.fail(e);
+                    if self.game_loading_requested {
+                        self.game_loading_requested = false;
+                        crate::platform::cancel_web_game_loading();
+                    }
+                }
             }
         }
 

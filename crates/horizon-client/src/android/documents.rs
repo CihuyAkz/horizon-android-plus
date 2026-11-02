@@ -10,12 +10,13 @@ use jni::{
     objects::{JObject, JString},
 };
 use std::{
+    collections::VecDeque,
     path::PathBuf,
     sync::{
         Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -41,6 +42,22 @@ pub struct Notice {
     pub changed: bool,
     pub kind: Option<Kind>,
 }
+#[derive(Clone)]
+pub struct ProgressSnapshot {
+    pub kind: Kind,
+    pub file_name: String,
+    pub stage: String,
+    pub percent: u8,
+    pub active: bool,
+    pub convert: bool,
+    pub waiting_for_choice: bool,
+    finished_at: Option<Instant>,
+}
+#[derive(Clone)]
+pub struct GameNotification {
+    pub title: String,
+    pub message: String,
+}
 #[derive(Default)]
 struct State {
     request: Option<Request>,
@@ -52,6 +69,8 @@ struct State {
     cursor: (f32, f32),
     web_result_id: u64,
     web_result: Option<(Kind, String)>,
+    progress: Option<ProgressSnapshot>,
+    game_notifications: VecDeque<GameNotification>,
 }
 #[derive(Clone, Copy)]
 pub enum Choice {
@@ -69,6 +88,8 @@ static STATE: Mutex<State> = Mutex::new(State {
     cursor: (0.0, 0.0),
     web_result_id: 0,
     web_result: None,
+    progress: None,
+    game_notifications: VecDeque::new(),
 });
 static CANCEL: AtomicBool = AtomicBool::new(false);
 pub fn busy() -> bool {
@@ -81,6 +102,14 @@ pub fn conflict() -> bool {
         .unwrap_or_else(|e| e.into_inner())
         .conflict
         .is_some()
+}
+pub fn shader_conflict() -> bool {
+    STATE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .conflict
+        .as_ref()
+        .is_some_and(|conflict| conflict.kind == Kind::Shaders)
 }
 fn notice(text: impl Into<String>, changed: bool) {
     let text = text.into();
@@ -106,10 +135,150 @@ fn imported(text: impl Into<String>, kind: Kind) {
     s.web_result = Some((kind, text.clone()));
     s.toast = Some((text.clone(), std::time::Instant::now()));
     s.notice = Some(Notice {
-        text,
+        text: text.clone(),
         changed: true,
         kind: Some(kind),
     });
+    if kind == Kind::Shaders {
+        let file_name = s
+            .progress
+            .as_ref()
+            .map(|progress| progress.file_name.clone())
+            .unwrap_or_else(|| "Shader pack".into());
+        let short_name = file_name.chars().take(28).collect::<String>();
+        if let Some(progress) = s.progress.as_mut() {
+            progress.stage = "Completed".into();
+            progress.percent = 100;
+            progress.active = false;
+            progress.waiting_for_choice = false;
+            progress.finished_at = Some(Instant::now());
+        }
+        let (title, message) = if text.starts_with("Converted ") {
+            (
+                "Shader converted",
+                format!("{short_name} is ready. Reload packs to apply."),
+            )
+        } else if text.contains("already Horizon-compatible") {
+            (
+                "Shader pack ready",
+                format!("{short_name} is compatible. Reload packs to apply."),
+            )
+        } else {
+            (
+                "Shader pack imported",
+                format!("{short_name} is ready. Enable it in Shader Packs."),
+            )
+        };
+        s.game_notifications.push_back(GameNotification {
+            title: title.into(),
+            message,
+        });
+        while s.game_notifications.len() > 4 {
+            s.game_notifications.pop_front();
+        }
+    }
+}
+
+pub fn progress_snapshot() -> Option<ProgressSnapshot> {
+    let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
+    if state.progress.as_ref().is_some_and(|progress| {
+        !progress.active
+            && !progress.waiting_for_choice
+            && progress
+                .finished_at
+                .is_some_and(|time| time.elapsed() > Duration::from_secs(12))
+    }) {
+        state.progress = None;
+    }
+    state.progress.clone()
+}
+
+pub fn take_game_notifications() -> Vec<GameNotification> {
+    STATE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .game_notifications
+        .drain(..)
+        .collect()
+}
+
+fn start_shader_progress(file_name: &str, convert: bool) {
+    let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
+    state.progress = Some(ProgressSnapshot {
+        kind: Kind::Shaders,
+        file_name: file_name.to_owned(),
+        stage: "Preparing shader archive".into(),
+        percent: 0,
+        active: true,
+        convert,
+        waiting_for_choice: false,
+        finished_at: None,
+    });
+}
+
+fn update_shader_progress(stage: &str, percent: u8) {
+    let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(progress) = state.progress.as_mut() {
+        if progress.active {
+            progress.stage = stage.to_owned();
+            progress.percent = percent.min(99);
+        }
+    }
+}
+
+fn update_shader_progress_range(stage: &str, start: u8, span: u8, done: u64, total: u64) {
+    let ratio = if total == 0 {
+        1.0
+    } else {
+        done.min(total) as f32 / total as f32
+    };
+    update_shader_progress(
+        stage,
+        start.saturating_add((f32::from(span) * ratio).round() as u8),
+    );
+}
+
+fn wait_for_shader_conflict() {
+    let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(progress) = state.progress.as_mut() {
+        progress.stage = "Waiting for conflict choice".into();
+        progress.percent = 98;
+        progress.active = false;
+        progress.waiting_for_choice = true;
+        progress.finished_at = None;
+    }
+    state.game_notifications.push_back(GameNotification {
+        title: "Shader import paused".into(),
+        message: "Exit to Horizon to resolve the file conflict.".into(),
+    });
+    while state.game_notifications.len() > 4 {
+        state.game_notifications.pop_front();
+    }
+}
+
+fn finish_shader_failure(error: &str) {
+    let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(progress) = state.progress.as_mut() else {
+        return;
+    };
+    if !progress.active && !progress.waiting_for_choice {
+        return;
+    }
+    let file_name = progress.file_name.chars().take(28).collect::<String>();
+    let cancelled = error.to_ascii_lowercase().contains("cancelled");
+    progress.stage = if cancelled { "Cancelled" } else { "Failed" }.into();
+    progress.active = false;
+    progress.waiting_for_choice = false;
+    progress.finished_at = Some(Instant::now());
+    if !cancelled {
+        state.game_notifications.push_back(GameNotification {
+            title: "Shader import failed".into(),
+            message: format!("{file_name}: review the error in Horizon."),
+        });
+        while state.game_notifications.len() > 4 {
+            state.game_notifications.pop_front();
+        }
+    }
 }
 fn web_result(kind: Kind, text: impl Into<String>) {
     let mut s = STATE.lock().unwrap_or_else(|e| e.into_inner());
@@ -260,6 +429,7 @@ pub extern "system" fn document_result(
     }
     STATE.lock().unwrap_or_else(|e| e.into_inner()).working = true;
     let operation_kind = pending.kind;
+    let operation_is_shader = pending.kind == Kind::Shaders;
     let spawned = std::thread::Builder::new()
         .name("Content import".into())
         .spawn(move || {
@@ -280,6 +450,9 @@ pub extern "system" fn document_result(
             })();
             STATE.lock().unwrap_or_else(|e| e.into_inner()).working = false;
             if let Err(error) = result {
+                if operation_is_shader {
+                    finish_shader_failure(&error.to_string());
+                }
                 let message = format!("Import failed: {error}");
                 web_result(operation_kind, message.clone());
                 notice(message, false);
@@ -287,6 +460,9 @@ pub extern "system" fn document_result(
         });
     if let Err(error) = spawned {
         STATE.lock().unwrap_or_else(|e| e.into_inner()).working = false;
+        if operation_is_shader {
+            finish_shader_failure(&error.to_string());
+        }
         let message = format!("Import failed: {error}");
         web_result(operation_kind, message.clone());
         notice(message, false);
@@ -296,6 +472,11 @@ fn stage(request: Request, mut input: std::fs::File, name: String) -> Result<()>
     if !content_files::plain_name(&name) || !request.kind.accepts(&name) {
         return Err("Selected file has the wrong extension for this folder".into());
     }
+    let is_shader = request.kind == Kind::Shaders;
+    if is_shader {
+        start_shader_progress(&name, request.shader_mode == ShaderImportMode::Convert);
+    }
+    let input_size = input.metadata().ok().map(|metadata| metadata.len()).unwrap_or(0);
     let dir = request.home.join(request.kind.folder());
     std::fs::create_dir_all(&dir)?;
     if std::fs::symlink_metadata(&dir)?.file_type().is_symlink() {
@@ -326,14 +507,42 @@ fn stage(request: Request, mut input: std::fs::File, name: String) -> Result<()>
                 format!("Importing {}: {} KiB", request.kind.label(), bytes / 1024),
                 false,
             );
+            if is_shader {
+                let percent = if input_size > 0 {
+                    ((bytes.min(input_size) as f64 / input_size as f64) * 20.0).round() as u8
+                } else {
+                    0
+                };
+                update_shader_progress("Copying shader archive", percent);
+            }
             !CANCEL.load(Ordering::Relaxed)
         })?;
         output.sync_all()?;
         drop(output);
         notice("Checking archive...", false);
-        let native_shader = content_files::validate(&staged, request.kind, &name, || {
-            CANCEL.load(Ordering::Relaxed)
-        })?;
+        if is_shader {
+            update_shader_progress("Validating shader archive", 20);
+        }
+        let native_shader = content_files::validate_with_progress(
+            &staged,
+            request.kind,
+            &name,
+            || CANCEL.load(Ordering::Relaxed),
+            |done, total| {
+                if is_shader {
+                    update_shader_progress_range(
+                        "Validating shader archive",
+                        20,
+                        35,
+                        done,
+                        total,
+                    );
+                }
+            },
+        )?;
+        if is_shader {
+            update_shader_progress("Preparing shader files", 55);
+        }
         let name = if request.kind == Kind::Mods {
             format!("{}.hmod", horizon_mods::Package::read(&staged)?.manifest.id)
         } else if native_shader || name.to_ascii_lowercase().ends_with(".hshader") {
@@ -365,15 +574,39 @@ fn stage(request: Request, mut input: std::fs::File, name: String) -> Result<()>
                 return Err("Shader ZIP has an invalid folder name".into());
             }
             let extracted = dir.join(format!(".import-{stamp}"));
-            content_files::extract_shader_archive(&staged, &extracted, || {
-                CANCEL.load(Ordering::Relaxed)
-            })?;
+            if is_shader {
+                update_shader_progress("Extracting shader files", 55);
+            }
+            content_files::extract_shader_archive_with_progress(
+                &staged,
+                &extracted,
+                || CANCEL.load(Ordering::Relaxed),
+                |done, total| {
+                    if is_shader {
+                        update_shader_progress_range(
+                            "Extracting shader files",
+                            55,
+                            30,
+                            done,
+                            total,
+                        );
+                    }
+                },
+            )?;
             if request.shader_mode == ShaderImportMode::Convert {
+                if is_shader {
+                    update_shader_progress("Checking Horizon compatibility", 88);
+                }
                 shader_compatibility = content_files::check_and_convert_classic_shader(&extracted)
                     .map_err(|error| {
                         remove_path(&extracted);
                         error
                     })?;
+                if is_shader {
+                    update_shader_progress("Applying Horizon shader fix", 93);
+                }
+            } else if is_shader {
+                update_shader_progress("Preparing imported shader files", 93);
             }
             let _ = std::fs::remove_file(&staged);
             (dir.join(stem), extracted)
@@ -405,6 +638,9 @@ fn stage(request: Request, mut input: std::fs::File, name: String) -> Result<()>
                 request.kind.label()
             )
         };
+        if is_shader {
+            update_shader_progress("Installing shader pack", 97);
+        }
         if std::fs::symlink_metadata(&target).is_ok() {
             STATE.lock().unwrap_or_else(|e| e.into_inner()).conflict = Some(Conflict {
                 kind: request.kind,
@@ -412,6 +648,9 @@ fn stage(request: Request, mut input: std::fs::File, name: String) -> Result<()>
                 target,
                 message: outcome,
             });
+            if is_shader {
+                wait_for_shader_conflict();
+            }
             notice(
                 "Pack already exists: choose Keep both, Replace or Cancel",
                 false,
@@ -441,6 +680,9 @@ pub fn resolve(choice: Choice) {
     };
     if matches!(choice, Choice::Cancel) {
         remove_path(&c.staged);
+        if c.kind == Kind::Shaders {
+            finish_shader_failure("Import cancelled");
+        }
         web_result(c.kind, "Import cancelled. The existing content was left unchanged.");
         notice("Import cancelled", false);
         return;
@@ -521,6 +763,9 @@ pub fn resolve(choice: Choice) {
         Ok(()) => imported(c.message, c.kind),
         Err(e) => {
             remove_path(&c.staged);
+            if c.kind == Kind::Shaders {
+                finish_shader_failure(&e.to_string());
+            }
             let message = format!("Import failed: {e}");
             web_result(c.kind, message.clone());
             notice(message, false);

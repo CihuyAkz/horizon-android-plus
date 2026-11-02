@@ -205,6 +205,8 @@ def main():
         'Java_dev_horizon_android_HorizonActivity_nativeWebCommand',
         'Java_dev_horizon_android_HorizonActivity_nativeWebStatus',
         'Java_dev_horizon_android_HorizonActivity_nativeDocumentResult',
+        'Java_dev_horizon_android_HorizonDocumentsProvider_nativeCall',
+        'Java_dev_horizon_android_HorizonDocumentsProvider_nativeOpen',
     )
     missing_symbols = [symbol for symbol in required_symbols if symbol not in exported_symbols]
     if missing_symbols:
