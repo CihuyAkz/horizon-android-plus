@@ -287,7 +287,6 @@ impl Launcher {
             "runtimeVersions": runtime_versions(&self.home, &loaded_runtime),
             "upstreamNightly": crate::release_feed::status(&self.home, crate::android_runtime_abi()),
             "activeInstanceId": self.catalog.config.active_instance().id,
-            "instanceCreationRequired": !self.catalog.config.has_created_instance(),
             "instances": self.catalog.config.instances.iter().map(|instance| serde_json::json!({
                 "id": instance.id,
                 "name": instance.name,
@@ -319,9 +318,13 @@ impl Launcher {
                     crate::catalog::RendererMode::VulkanCompatibility => "vulkan-compatibility",
                 },
                 "renderScalePercent": self.catalog.config.render_scale.percent(),
-                "orientation": self.catalog.config.game_orientation().as_str(),
-                "launcherOrientation": self.catalog.config.launcher_orientation().as_str(),
-                "gameOrientation": self.catalog.config.game_orientation().as_str(),
+                "orientation": match self.catalog.config.orientation {
+                    crate::catalog::Orientation::Landscape => "landscape",
+                    crate::catalog::Orientation::Portrait => "portrait",
+                    crate::catalog::Orientation::ReverseLandscape => "reverse-landscape",
+                    crate::catalog::Orientation::ReversePortrait => "reverse-portrait",
+                    crate::catalog::Orientation::Auto => "auto",
+                },
                 "immersive": self.catalog.config.screen.immersive,
                 "avoidCutout": self.catalog.config.screen.avoid_cutout,
                 "aspect": match self.catalog.config.screen.aspect {
@@ -352,7 +355,7 @@ impl Launcher {
             .ok_or_else(|| "Missing setting key".to_string())?;
         let value = request.get("value")
             .ok_or_else(|| "Missing setting value".to_string())?;
-        let mut apply_orientation = None;
+        let mut orientation_changed = false;
         let mut screen_changed = false;
         let mut scale_changed = false;
         let mut device_changed = false;
@@ -376,8 +379,8 @@ impl Launcher {
                 self.catalog.config.render_scale = crate::display::RenderScale::new(percent);
                 scale_changed = true;
             }
-            "orientation" | "launcherOrientation" | "gameOrientation" => {
-                let mode = match value.as_str() {
+            "orientation" => {
+                self.catalog.config.orientation = match value.as_str() {
                     Some("landscape") => crate::catalog::Orientation::Landscape,
                     Some("portrait") => crate::catalog::Orientation::Portrait,
                     Some("reverse-landscape") => crate::catalog::Orientation::ReverseLandscape,
@@ -385,21 +388,7 @@ impl Launcher {
                     Some("auto") => crate::catalog::Orientation::Auto,
                     _ => return Err("Unsupported screen orientation".into()),
                 };
-                match key {
-                    "launcherOrientation" => {
-                        self.catalog.config.launcher_orientation = Some(mode);
-                        apply_orientation = Some(mode);
-                    }
-                    "gameOrientation" => {
-                        self.catalog.config.orientation = mode;
-                        self.catalog.config.game_orientation = Some(mode);
-                    }
-                    _ => {
-                        self.catalog.config.orientation = mode;
-                        self.catalog.config.game_orientation = Some(mode);
-                        apply_orientation = Some(mode);
-                    }
-                }
+                orientation_changed = true;
             }
             "immersive" => {
                 self.catalog.config.screen.immersive = value.as_bool()
@@ -450,8 +439,8 @@ impl Launcher {
             _ => return Err("Unsupported Android setting".into()),
         }
         self.catalog.config.save(&self.home)?;
-        if let Some(orientation) = apply_orientation {
-            crate::platform::set_orientation(orientation);
+        if orientation_changed {
+            crate::platform::set_orientation(self.catalog.config.orientation);
         }
         if screen_changed {
             self.configure_screen();
@@ -777,7 +766,7 @@ impl Launcher {
     }
 
     fn open(&mut self, events: &ActiveEventLoop) -> Result<()> {
-        crate::platform::set_orientation(self.catalog.config.launcher_orientation());
+        crate::platform::set_launcher_orientation();
         self.configure_screen();
         crate::display::set_scale(self.catalog.config.render_scale);
         horizon_client::android_runtime::configure_gpu(false);
@@ -844,33 +833,6 @@ impl Launcher {
                     .into(),
             );
         }
-        if !self.catalog.config.has_active_created_instance() {
-            let message = if self.catalog.config.has_created_instance() {
-                "Select a created Instance before starting the game. Open Instances and activate a game profile."
-            } else {
-                "Create an Instance before starting the game. Open Instances and create your first game profile."
-            };
-            return Err(message.into());
-        }
-        let profile_home = self.catalog.config.profile_home(&self.home);
-        std::fs::create_dir_all(&profile_home)?;
-        let profile_meta = std::fs::symlink_metadata(&profile_home)?;
-        if !profile_meta.is_dir() || profile_meta.file_type().is_symlink() {
-            return Err("The active profile directory is not a safe directory".into());
-        }
-        let instances_home = profile_home.join("instances");
-        std::fs::create_dir_all(&instances_home)?;
-        let instances_meta = std::fs::symlink_metadata(&instances_home)?;
-        if !instances_meta.is_dir() || instances_meta.file_type().is_symlink() {
-            return Err("The Instances directory is not a safe directory".into());
-        }
-        let game_home = self.catalog.config.game_home(&self.home);
-        std::fs::create_dir_all(&game_home)?;
-        let game_home_meta = std::fs::symlink_metadata(&game_home)?;
-        if !game_home_meta.is_dir() || game_home_meta.file_type().is_symlink() {
-            return Err("The active Instance folder is not a safe directory".into());
-        }
-        crate::backend::set_game_home(game_home);
         crate::configure_input_mode(self.catalog.config.input_host);
         crate::device_runtime::configure(self.catalog.config.device);
         if horizon_client::official_install::ready(&self.home) {
@@ -958,12 +920,10 @@ impl Launcher {
             horizon_client::android_runtime::clear_gamepads();
             self.controller_edges = Default::default();
             self.controller_repeat = None;
-            crate::platform::set_orientation(self.catalog.config.game_orientation());
             let game = match game::android_game() {
                 Ok(game) => game,
                 Err(error) => {
                     crate::performance::stop();
-                    crate::platform::set_orientation(self.catalog.config.launcher_orientation());
                     return Err(error);
                 }
             };
@@ -1010,11 +970,8 @@ impl Launcher {
 impl ApplicationHandler for Launcher {
     fn resumed(&mut self, events: &ActiveEventLoop) {
         self.configure_screen();
-        if self.game.is_some() {
-            crate::platform::set_orientation(self.catalog.config.game_orientation());
-            if let Some(game) = &mut self.game {
-                return game.resumed(events);
-            }
+        if let Some(game) = &mut self.game {
+            return game.resumed(events);
         }
         if let Err(error) = self.open(events) {
             self.fail(error);
@@ -1031,7 +988,9 @@ impl ApplicationHandler for Launcher {
         }
     }
     fn window_event(&mut self, events: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        if crate::documents::handle_event(&event) {
+        if !(self.game.is_some() && crate::documents::shader_operation_pending())
+            && crate::documents::handle_event(&event)
+        {
             return;
         }
         if matches!(event, WindowEvent::Resized(_)) {
@@ -1039,12 +998,6 @@ impl ApplicationHandler for Launcher {
         }
         if matches!(event, WindowEvent::Focused(true)) {
             self.configure_screen();
-            let orientation = if self.game.is_some() {
-                self.catalog.config.game_orientation()
-            } else {
-                self.catalog.config.launcher_orientation()
-            };
-            crate::platform::set_orientation(orientation);
         }
         if let Some(game) = &mut self.game {
             let first_game_frame = self.game_loading_requested

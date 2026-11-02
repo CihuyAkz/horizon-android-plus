@@ -10,7 +10,6 @@ use jni::{
     objects::{JObject, JString},
 };
 use std::{
-    collections::VecDeque,
     path::PathBuf,
     sync::{
         Mutex,
@@ -53,15 +52,11 @@ pub struct ProgressSnapshot {
     pub waiting_for_choice: bool,
     finished_at: Option<Instant>,
 }
-#[derive(Clone)]
-pub struct GameNotification {
-    pub title: String,
-    pub message: String,
-}
 #[derive(Default)]
 struct State {
     request: Option<Request>,
     working: bool,
+    working_kind: Option<Kind>,
     conflict: Option<Conflict>,
     notice: Option<Notice>,
     hits: Vec<([f32; 4], Choice)>,
@@ -70,7 +65,6 @@ struct State {
     web_result_id: u64,
     web_result: Option<(Kind, String)>,
     progress: Option<ProgressSnapshot>,
-    game_notifications: VecDeque<GameNotification>,
 }
 #[derive(Clone, Copy)]
 pub enum Choice {
@@ -81,6 +75,7 @@ pub enum Choice {
 static STATE: Mutex<State> = Mutex::new(State {
     request: None,
     working: false,
+    working_kind: None,
     conflict: None,
     notice: None,
     hits: Vec::new(),
@@ -89,7 +84,6 @@ static STATE: Mutex<State> = Mutex::new(State {
     web_result_id: 0,
     web_result: None,
     progress: None,
-    game_notifications: VecDeque::new(),
 });
 static CANCEL: AtomicBool = AtomicBool::new(false);
 pub fn busy() -> bool {
@@ -111,15 +105,32 @@ pub fn shader_conflict() -> bool {
         .as_ref()
         .is_some_and(|conflict| conflict.kind == Kind::Shaders)
 }
-fn notice(text: impl Into<String>, changed: bool) {
+pub fn shader_operation_pending() -> bool {
+    let state = STATE.lock().unwrap_or_else(|e| e.into_inner());
+    state
+        .request
+        .as_ref()
+        .is_some_and(|request| request.kind == Kind::Shaders)
+        || state.working_kind == Some(Kind::Shaders)
+        || state
+            .progress
+            .as_ref()
+            .is_some_and(|progress| {
+                progress.kind == Kind::Shaders && (progress.active || progress.waiting_for_choice)
+            })
+        || state
+            .conflict
+            .as_ref()
+            .is_some_and(|conflict| conflict.kind == Kind::Shaders)
+}
+fn notice_for_kind(text: impl Into<String>, changed: bool, kind: Option<Kind>) {
     let text = text.into();
     let mut s = STATE.lock().unwrap_or_else(|e| e.into_inner());
     s.toast = Some((text.clone(), std::time::Instant::now()));
-    s.notice = Some(Notice {
-        text,
-        changed,
-        kind: None,
-    });
+    s.notice = Some(Notice { text, changed, kind });
+}
+fn notice(text: impl Into<String>, changed: bool) {
+    notice_for_kind(text, changed, None);
 }
 fn remove_path(path: &std::path::Path) {
     if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir()) {
@@ -140,41 +151,12 @@ fn imported(text: impl Into<String>, kind: Kind) {
         kind: Some(kind),
     });
     if kind == Kind::Shaders {
-        let file_name = s
-            .progress
-            .as_ref()
-            .map(|progress| progress.file_name.clone())
-            .unwrap_or_else(|| "Shader pack".into());
-        let short_name = file_name.chars().take(28).collect::<String>();
         if let Some(progress) = s.progress.as_mut() {
             progress.stage = "Completed".into();
             progress.percent = 100;
             progress.active = false;
             progress.waiting_for_choice = false;
             progress.finished_at = Some(Instant::now());
-        }
-        let (title, message) = if text.starts_with("Converted ") {
-            (
-                "Shader converted",
-                format!("{short_name} is ready. Reload packs to apply."),
-            )
-        } else if text.starts_with("Conversion completed") {
-            (
-                "Shader compatibility checked",
-                format!("{short_name} was checked and validated for Horizon."),
-            )
-        } else {
-            (
-                "Shader pack imported",
-                format!("{short_name} is ready. Enable it in Shader Packs."),
-            )
-        };
-        s.game_notifications.push_back(GameNotification {
-            title: title.into(),
-            message,
-        });
-        while s.game_notifications.len() > 4 {
-            s.game_notifications.pop_front();
         }
     }
 }
@@ -191,15 +173,6 @@ pub fn progress_snapshot() -> Option<ProgressSnapshot> {
         state.progress = None;
     }
     state.progress.clone()
-}
-
-pub fn take_game_notifications() -> Vec<GameNotification> {
-    STATE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .game_notifications
-        .drain(..)
-        .collect()
 }
 
 fn start_shader_progress(file_name: &str, convert: bool) {
@@ -247,13 +220,6 @@ fn wait_for_shader_conflict() {
         progress.waiting_for_choice = true;
         progress.finished_at = None;
     }
-    state.game_notifications.push_back(GameNotification {
-        title: "Shader import paused".into(),
-        message: "Exit to Horizon to resolve the file conflict.".into(),
-    });
-    while state.game_notifications.len() > 4 {
-        state.game_notifications.pop_front();
-    }
 }
 
 fn finish_shader_failure(error: &str) {
@@ -264,21 +230,11 @@ fn finish_shader_failure(error: &str) {
     if !progress.active && !progress.waiting_for_choice {
         return;
     }
-    let file_name = progress.file_name.chars().take(28).collect::<String>();
     let cancelled = error.to_ascii_lowercase().contains("cancelled");
     progress.stage = if cancelled { "Cancelled" } else { "Failed" }.into();
     progress.active = false;
     progress.waiting_for_choice = false;
     progress.finished_at = Some(Instant::now());
-    if !cancelled {
-        state.game_notifications.push_back(GameNotification {
-            title: "Shader import failed".into(),
-            message: format!("{file_name}: review the error in Horizon."),
-        });
-        while state.game_notifications.len() > 4 {
-            state.game_notifications.pop_front();
-        }
-    }
 }
 fn web_result(kind: Kind, text: impl Into<String>) {
     let mut s = STATE.lock().unwrap_or_else(|e| e.into_inner());
@@ -341,7 +297,7 @@ pub fn begin_with_shader_mode(
         (Kind::Shaders, ShaderImportMode::Convert) => "shader with conversion",
         _ => kind.label(),
     };
-    notice(format!("Choose a {label} file"), false);
+    notice_for_kind(format!("Choose a {label} file"), false, Some(kind));
     Ok(())
 }
 pub fn picker_failed(error: &str) {
@@ -354,7 +310,7 @@ pub fn picker_failed(error: &str) {
     if let Some(kind) = kind {
         web_result(kind, format!("Import failed: {error}"));
     }
-    notice(error, false);
+    notice_for_kind(error, false, kind);
 }
 
 pub fn web_conflict() -> Option<(Kind, String, String)> {
@@ -408,7 +364,7 @@ pub extern "system" fn document_result(
     };
     if result != -1 || uri.is_null() {
         web_result(pending.kind, "Import cancelled. No files were changed.");
-        notice("Import cancelled", false);
+        notice_for_kind("Import cancelled", false, Some(pending.kind));
         return;
     }
     let setup = (|| -> jni::errors::Result<_> {
@@ -419,17 +375,21 @@ pub extern "system" fn document_result(
     let Ok((vm, activity, uri)) = setup else {
         let _ = env.exception_clear();
         web_result(pending.kind, "Import failed: could not read the selected document.");
-        notice("Could not read the selected document", false);
+        notice_for_kind("Could not read the selected document", false, Some(pending.kind));
         return;
     };
     if !uri.starts_with("content://") || uri.len() > 8192 {
         web_result(pending.kind, "Import failed: unsupported document URI.");
-        notice("Unsupported document URI", false);
+        notice_for_kind("Unsupported document URI", false, Some(pending.kind));
         return;
     }
-    STATE.lock().unwrap_or_else(|e| e.into_inner()).working = true;
     let operation_kind = pending.kind;
     let operation_is_shader = pending.kind == Kind::Shaders;
+    {
+        let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.working = true;
+        state.working_kind = Some(operation_kind);
+    }
     let spawned = std::thread::Builder::new()
         .name("Content import".into())
         .spawn(move || {
@@ -448,108 +408,34 @@ pub extern "system" fn document_result(
                 let (input, name) = opened.map_err(|e| e.to_string())?;
                 stage(pending, input, name)
             })();
-            STATE.lock().unwrap_or_else(|e| e.into_inner()).working = false;
+            {
+                let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
+                state.working = false;
+                state.working_kind = None;
+            }
             if let Err(error) = result {
                 if operation_is_shader {
                     finish_shader_failure(&error.to_string());
                 }
                 let message = format!("Import failed: {error}");
                 web_result(operation_kind, message.clone());
-                notice(message, false);
+                notice_for_kind(message, false, Some(operation_kind));
             }
         });
     if let Err(error) = spawned {
-        STATE.lock().unwrap_or_else(|e| e.into_inner()).working = false;
+        {
+            let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
+            state.working = false;
+            state.working_kind = None;
+        }
         if operation_is_shader {
             finish_shader_failure(&error.to_string());
         }
         let message = format!("Import failed: {error}");
         web_result(operation_kind, message.clone());
-        notice(message, false);
+        notice_for_kind(message, false, Some(operation_kind));
     }
 }
-fn save_shader_conversion_report(
-    shaderpacks_dir: &std::path::Path,
-    stamp: u128,
-    report: &str,
-) -> Result<String> {
-    use std::io::Write as _;
-
-    let report_dir = shaderpacks_dir.join(".horizon-shaderport-reports");
-    std::fs::create_dir_all(&report_dir)?;
-    let metadata = std::fs::symlink_metadata(&report_dir)?;
-    if !metadata.is_dir() || metadata.file_type().is_symlink() {
-        return Err("Refusing a redirected shader conversion report directory".into());
-    }
-
-    let report_name = format!("conversion-{stamp}.md");
-    let temporary = report_dir.join(format!(".report-{stamp}.tmp"));
-    let destination = report_dir.join(&report_name);
-    let result = (|| -> Result<()> {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)?;
-        file.write_all(report.as_bytes())?;
-        file.sync_all()?;
-        std::fs::rename(&temporary, &destination)?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temporary);
-    }
-    result?;
-    Ok(format!(".horizon-shaderport-reports/{report_name}"))
-}
-
-fn convert_classic_shader_pack(
-    source: &std::path::Path,
-    destination: &std::path::Path,
-    cache: &std::path::Path,
-    pack_name: &str,
-    stamp: u128,
-) -> Result<(usize, String, String, String)> {
-    let converted_archive = cache.join(format!(".shader-converted-{stamp}.zip"));
-    let result = (|| -> Result<(usize, String, String, String)> {
-        update_shader_progress("Running Horizon shader converter", 88);
-        let conversion = crate::shaderport::convert(source, &converted_archive, pack_name)
-            .map_err(|error| format!("Shader conversion failed: {error}"))?;
-        if CANCEL.load(Ordering::Relaxed) {
-            return Err("Shader conversion cancelled".into());
-        }
-        update_shader_progress("Validating converted shader archive", 92);
-        let archive_name = format!("{pack_name}.zip");
-        let native_shader = content_files::validate_with_progress(
-            &converted_archive,
-            Kind::Shaders,
-            &archive_name,
-            || CANCEL.load(Ordering::Relaxed),
-            |_, _| {},
-        )?;
-        if native_shader {
-            return Err("The shader converter returned an unexpected native shader archive".into());
-        }
-        update_shader_progress("Extracting converted shader files", 94);
-        content_files::extract_shader_archive_with_progress(
-            &converted_archive,
-            destination,
-            || CANCEL.load(Ordering::Relaxed),
-            |_, _| {},
-        )?;
-        Ok((
-            conversion.rules_applied,
-            conversion.before_summary,
-            conversion.after_summary,
-            conversion.report,
-        ))
-    })();
-    remove_path(&converted_archive);
-    if result.is_err() {
-        remove_path(destination);
-    }
-    result
-}
-
 fn stage(request: Request, mut input: std::fs::File, name: String) -> Result<()> {
     if !content_files::plain_name(&name) || !request.kind.accepts(&name) {
         return Err("Selected file has the wrong extension for this folder".into());
@@ -585,9 +471,10 @@ fn stage(request: Request, mut input: std::fs::File, name: String) -> Result<()>
             .create_new(true)
             .open(&staged)?;
         content_files::copy_bounded(&mut input, &mut output, |bytes| {
-            notice(
+            notice_for_kind(
                 format!("Importing {}: {} KiB", request.kind.label(), bytes / 1024),
                 false,
+                Some(request.kind),
             );
             if is_shader {
                 let percent = if input_size > 0 {
@@ -601,7 +488,7 @@ fn stage(request: Request, mut input: std::fs::File, name: String) -> Result<()>
         })?;
         output.sync_all()?;
         drop(output);
-        notice("Checking archive...", false);
+        notice_for_kind("Checking archive...", false, Some(request.kind));
         if is_shader {
             update_shader_progress("Validating shader archive", 20);
         }
@@ -645,7 +532,7 @@ fn stage(request: Request, mut input: std::fs::File, name: String) -> Result<()>
         let classic_shader = request.kind == Kind::Shaders
             && name.to_ascii_lowercase().ends_with(".zip")
             && !native_shader;
-        let mut shader_conversion = None;
+        let mut shader_compatibility = None;
         let (target, installed_path) = if classic_shader {
             let stem = PathBuf::from(&name)
                 .file_stem()
@@ -675,41 +562,23 @@ fn stage(request: Request, mut input: std::fs::File, name: String) -> Result<()>
                     }
                 },
             )?;
-            let installed_path = if request.shader_mode == ShaderImportMode::Convert {
-                let converted = dir.join(format!(".import-converted-{stamp}"));
-                match convert_classic_shader_pack(
-                    &extracted,
-                    &converted,
-                    &request.cache,
-                    &stem,
-                    stamp,
-                ) {
-                    Ok((rules_applied, before, after, report)) => {
-                        let report_path = match save_shader_conversion_report(&dir, stamp, &report) {
-                            Ok(path) => path,
-                            Err(error) => {
-                                remove_path(&extracted);
-                                remove_path(&converted);
-                                return Err(error);
-                            }
-                        };
-                        shader_conversion = Some((rules_applied, before, after, report_path));
-                        remove_path(&extracted);
-                        converted
-                    }
-                    Err(error) => {
-                        remove_path(&extracted);
-                        return Err(error);
-                    }
-                }
-            } else {
+            if request.shader_mode == ShaderImportMode::Convert {
                 if is_shader {
-                    update_shader_progress("Preparing imported shader files", 93);
+                    update_shader_progress("Checking Horizon compatibility", 88);
                 }
-                extracted
-            };
+                shader_compatibility = content_files::check_and_convert_classic_shader(&extracted)
+                    .map_err(|error| {
+                        remove_path(&extracted);
+                        error
+                    })?;
+                if is_shader {
+                    update_shader_progress("Applying Horizon shader fix", 93);
+                }
+            } else if is_shader {
+                update_shader_progress("Preparing imported shader files", 93);
+            }
             let _ = std::fs::remove_file(&staged);
-            (dir.join(stem), installed_path)
+            (dir.join(stem), extracted)
         } else {
             (dir.join(&name), staged.clone())
         };
@@ -719,20 +588,16 @@ fn stage(request: Request, mut input: std::fs::File, name: String) -> Result<()>
                     "Imported {name} without conversion. Shader files were extracted unchanged."
                 )
             } else {
-                let (rules_applied, before, after, report_path) = shader_conversion.unwrap_or((
-                    0,
-                    "Compatibility scan unavailable".into(),
-                    "No conversion summary".into(),
-                    "Report unavailable".into(),
-                ));
-                if rules_applied > 0 {
-                    format!(
-                        "Converted {name} for Horizon. Applied {rules_applied} translator rule(s). Before: {before}. After: {after}. Report: {report_path}."
-                    )
-                } else {
-                    format!(
-                        "Conversion completed for {name}; no rewrite rules matched. The converted output was still reloaded and validated. Before: {before}. After: {after}. Report: {report_path}."
-                    )
+                match shader_compatibility {
+                    Some(true) => format!(
+                        "Converted {name} for Horizon. Only shaders/lib/common.glsl was changed; other shader files were preserved."
+                    ),
+                    Some(false) => format!(
+                        "{name} is already Horizon-compatible. No shader source files were changed."
+                    ),
+                    None => format!(
+                        "{name} was imported unchanged. No verified Horizon conversion rule matched this shader ZIP."
+                    ),
                 }
             }
         } else {
@@ -755,9 +620,10 @@ fn stage(request: Request, mut input: std::fs::File, name: String) -> Result<()>
             if is_shader {
                 wait_for_shader_conflict();
             }
-            notice(
+            notice_for_kind(
                 "Pack already exists: choose Keep both, Replace or Cancel",
                 false,
+                Some(request.kind),
             );
         } else {
             if let Err(error) = std::fs::rename(&installed_path, &target) {
@@ -788,7 +654,7 @@ pub fn resolve(choice: Choice) {
             finish_shader_failure("Import cancelled");
         }
         web_result(c.kind, "Import cancelled. The existing content was left unchanged.");
-        notice("Import cancelled", false);
+        notice_for_kind("Import cancelled", false, Some(c.kind));
         return;
     }
     let result = (|| -> Result<()> {
@@ -872,17 +738,31 @@ pub fn resolve(choice: Choice) {
             }
             let message = format!("Import failed: {e}");
             web_result(c.kind, message.clone());
-            notice(message, false);
+            notice_for_kind(message, false, Some(c.kind));
         }
     }
 }
 pub fn cancel() {
     CANCEL.store(true, Ordering::Relaxed);
-    STATE.lock().unwrap_or_else(|e| e.into_inner()).request = None;
+    let kind = {
+        let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(request) = state.request.take() {
+            Some(request.kind)
+        } else if let Some(conflict) = state.conflict.as_ref() {
+            Some(conflict.kind)
+        } else {
+            state
+                .progress
+                .as_ref()
+                .filter(|progress| progress.active || progress.waiting_for_choice)
+                .map(|progress| progress.kind)
+                .or(state.working_kind)
+        }
+    };
     if conflict() {
         resolve(Choice::Cancel);
     } else {
-        notice("Import cancelled", false);
+        notice_for_kind("Import cancelled", false, kind);
     }
 }
 pub fn tap(x: f32, y: f32) -> bool {
@@ -906,6 +786,9 @@ pub fn tap(x: f32, y: f32) -> bool {
     true
 }
 pub fn draw(batch: &mut HudBatch, atlas: &HudAtlas) {
+    if shader_operation_pending() {
+        return;
+    }
     let mut ui = Ui::mobile(atlas, batch, (0.0, 0.0));
     draw_ui(&mut ui);
     ui.finish();

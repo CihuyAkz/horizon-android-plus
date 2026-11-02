@@ -1,15 +1,17 @@
-Horizon Android Plus - Android CI compile fixes
+Horizon Android Plus — shader in-game popup adjustment
 
-This source update addresses the Rust compile errors from GitHub Actions run 41208394347.
+This ZIP contains the four updated source files from the previous shader overlay change,
+with the shader toast notification restored.
 
-Changes:
-- ui_theme.rs: exposes color::with_alpha as a public function so the Android launcher crate can call it.
-- android/launcher_pages.rs: stores the Home action label in a String before borrowing it for button(), avoiding E0716.
-- android/catalog.rs: marks two intentionally unused values with underscore names to remove warnings from that build.
+Behavior:
+- The full-screen shader import/conversion modal is suppressed while a shader operation
+  is running during gameplay.
+- Gameplay input is not captured by that modal while the game is active.
+- Small Android in-game system-message toasts are retained, including shader import /
+  conversion status messages.
+- Shader conversion, progress state, cancellation, and conflict handling remain intact.
+- The conflict-resolution UI remains available in the launcher after returning from game.
+- Orientation settings are not changed.
 
-The update is based on the native UI source ZIP previously prepared for this repository. It does not change the provider routing or launcher behavior.
-
-Validation:
-- Source-level checks confirm the referenced function is public and the temporary format! borrow is gone.
-- ZIP integrity is checked after packaging.
-- cargo check/build and Android APK compilation were not run in this environment because cargo and rustc are not installed.
+Copy the files while preserving their directory paths.
+Native APK compilation has not been performed in this environment.
