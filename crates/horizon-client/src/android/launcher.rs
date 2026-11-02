@@ -747,7 +747,7 @@ impl Launcher {
             if let Some(pinned) = self.catalog.config.active_instance().version.as_deref()
                 && pinned != current_runtime
             {
-                return Err(format!("Instance requires {pinned}, but this APK contains {current_runtime}. Install an Android build for that version first."));
+                return Err(format!("Instance requires {pinned}, but this APK contains {current_runtime}. Install an Android build for that version first.").into());
             }
             horizon_client::android_resources::repair_structure_transforms(
                 &self.home.join("engine-data.zip"),
