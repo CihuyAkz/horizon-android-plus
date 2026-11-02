@@ -41,7 +41,7 @@ pub fn open_folder(dir: &Path) {
             _ => None,
         };
         if let Some(folder) = folder {
-            let home = crate::backend::data_dir();
+            let home = crate::backend::game_home();
             let id =
                 crate::document_store::folder_id(crate::document_store::profile(&home), folder);
             if !crate::platform::open_documents(&id) {

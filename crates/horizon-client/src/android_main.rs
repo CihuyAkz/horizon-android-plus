@@ -37,8 +37,6 @@ mod document_provider;
 mod document_store;
 #[path = "android/documents.rs"]
 mod documents;
-#[path = "../../horizon-android/src/shaderport/mod.rs"]
-mod shaderport;
 #[path = "android/exit_reports.rs"]
 mod exit_reports;
 #[path = "android/gallery.rs"]
@@ -47,6 +45,8 @@ mod gallery;
 mod native_ime;
 #[path = "android/performance.rs"]
 mod performance;
+#[path = "android/release_feed.rs"]
+mod release_feed;
 #[path = "android/platform.rs"]
 mod platform;
 #[rustfmt::skip]
@@ -71,15 +71,23 @@ mod backend {
         "1.0.1-dev"
     };
     static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    static GAME_HOME: std::sync::OnceLock<std::sync::RwLock<std::path::PathBuf>> = std::sync::OnceLock::new();
     pub fn initialize(home: std::path::PathBuf) {
-        let _ = HOME.set(home);
+        let _ = HOME.set(home.clone());
+        set_game_home(home);
+    }
+    pub fn set_game_home(home: std::path::PathBuf) {
+        let slot = GAME_HOME.get_or_init(|| std::sync::RwLock::new(home.clone()));
+        *slot.write().unwrap_or_else(|error| error.into_inner()) = home;
     }
     pub fn game_home() -> std::path::PathBuf {
-        data_dir()
+        GAME_HOME.get().expect("android_main sets game home")
+            .read().unwrap_or_else(|error| error.into_inner()).clone()
     }
     pub fn game_mod_api_level() -> Option<u32> {
         Some(horizon_mods::api_level::LEVEL)
     }
+    /// App-private root for launcher config and account credentials.
     pub fn data_dir() -> std::path::PathBuf {
         HOME.get().expect("android_main sets account home").clone()
     }
@@ -103,7 +111,7 @@ pub extern "system" fn native_web_command(
     action: i32,
     payload: JString<'_>,
 ) {
-    if !(1..=11).contains(&action) { return; }
+    if !(1..=17).contains(&action) { return; }
     let value = if payload.is_null() {
         String::new()
     } else {
@@ -157,6 +165,21 @@ pub(crate) fn save_input_mode() {
         }
     });
 }
+/// Identity of the Android-native Horizon engine embedded in this APK. This is deliberately
+/// derived from the Horizon source revision, not from the Android Plus APK release number.
+pub(crate) fn android_runtime_version() -> String {
+    option_env!("HORIZON_ANDROID_BUILD_VERSION")
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            let commit = option_env!("HORIZON_ANDROID_BUILD_COMMIT").unwrap_or("source-export");
+            format!("native-{commit}-source")
+        })
+}
+
+pub(crate) fn android_runtime_abi() -> &'static str {
+    option_env!("HORIZON_ANDROID_ABI").unwrap_or("unknown")
+}
+
 pub(crate) const PUBLIC_BUILD: bool = match option_env!("HORIZON_ANDROID_PUBLIC") {
     Some(value) => value.len() == 1 && value.as_bytes()[0] == b'1',
     None => false,

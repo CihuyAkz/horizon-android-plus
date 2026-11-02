@@ -47,10 +47,35 @@ impl RendererMode {
     }
 }
 
+/// A game instance owns its saves, options, mods, packs and shader selection.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GameInstance {
+    pub id: String,
+    pub name: String,
+    /// None follows the latest runtime installed by the launcher, with the APK runtime as fallback.
+    pub version: Option<String>,
+}
+impl Default for GameInstance {
+    fn default() -> Self {
+        Self { id: "default".into(), name: "Horizon".into(), version: None }
+    }
+}
+
+pub fn valid_runtime_id(value: &str) -> bool {
+    value.starts_with("native-")
+        && (14..=96).contains(&value.len())
+        && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_' || byte == b'.')
+        && !value.contains("..")
+}
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub profile: u32,
+    /// Installed game instances. The default instance maps to the legacy game directory.
+    pub instances: Vec<GameInstance>,
+    pub selected_instance: String,
     pub proxy: Option<String>,
     pub name: String,
     pub server: String,
@@ -117,6 +142,7 @@ impl Config {
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
         let mut config: Self = serde_json::from_value(value.clone()).unwrap_or_default();
+        config.ensure_instances();
         config.shader_source = crate::shader_catalog::Origin::Modrinth;
         config.mod_source = crate::shader_catalog::Origin::Horizon;
         if cfg!(target_pointer_width = "32") && value.get("renderer").is_none() {
@@ -142,6 +168,9 @@ impl Config {
             serde_json::to_vec_pretty(self).map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
+        // The selected runtime marker is written by the stable NativeActivity loader after
+        // Java resolves the active Instance. Config saves must not pretend a different library
+        // has been loaded before the process is restarted.
         std::fs::rename(part, home.join("android-launcher.json")).map_err(|e| e.to_string())
     }
     pub fn profile_home(&self, home: &Path) -> PathBuf {
@@ -152,9 +181,94 @@ impl Config {
                 .join(format!("profile-{}", self.profile))
         }
     }
+    fn ensure_instances(&mut self) {
+        if !self.instances.iter().any(|instance| instance.id == "default") {
+            self.instances.insert(0, GameInstance::default());
+        }
+        // Do not let malformed/duplicate IDs escape the instances directory.
+        let mut seen = std::collections::HashSet::new();
+        self.instances.retain_mut(|instance| {
+            let id = instance.id.as_str();
+            let valid = id == "default"
+                || (!id.is_empty()
+                    && id.len() <= 48
+                    && id.chars().all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-'));
+            if instance.version.as_deref().is_some_and(|version| !valid_runtime_id(version)) {
+                instance.version = None;
+            }
+            valid && seen.insert(instance.id.clone())
+        });
+        if !self.instances.iter().any(|instance| instance.id == self.selected_instance) {
+            self.selected_instance = "default".into();
+        }
+    }
+
+    pub fn active_instance(&self) -> &GameInstance {
+        self.instances.iter()
+            .find(|instance| instance.id == self.selected_instance)
+            .or_else(|| self.instances.iter().find(|instance| instance.id == "default"))
+            .expect("Config always retains its default instance")
+    }
+
     pub fn game_home(&self, home: &Path) -> PathBuf {
-        // Legacy modpack selections are ignored; their files remain untouched.
-        self.profile_home(home)
+        // Keep the original install's data in the default instance, so upgrading is non-destructive.
+        let profile = self.profile_home(home);
+        let active = self.active_instance();
+        if active.id == "default" {
+            profile
+        } else {
+            profile.join("instances").join(&active.id)
+        }
+    }
+
+    pub fn create_instance(&mut self, name: &str) -> Result<String, String> {
+        let name = name.trim();
+        if name.is_empty() || name.len() > 32 || name.chars().any(char::is_control) {
+            return Err("Instance name must contain 1–32 visible characters".into());
+        }
+        let mut base = name.chars().map(|ch| {
+            if ch.is_ascii_alphanumeric() { ch.to_ascii_lowercase() } else { '-' }
+        }).collect::<String>();
+        while base.contains("--") { base = base.replace("--", "-"); }
+        base = base.trim_matches('-').to_owned();
+        if base.is_empty() { base = "instance".into(); }
+        base.truncate(36);
+        let mut id = base.clone();
+        let mut suffix = 2;
+        while self.instances.iter().any(|instance| instance.id == id) {
+            id = format!("{base}-{suffix}");
+            suffix += 1;
+        }
+        self.instances.push(GameInstance { id: id.clone(), name: name.to_owned(), version: None });
+        self.selected_instance = id.clone();
+        Ok(id)
+    }
+
+    pub fn select_instance(&mut self, id: &str) -> Result<(), String> {
+        if !self.instances.iter().any(|instance| instance.id == id) {
+            return Err("That instance no longer exists".into());
+        }
+        self.selected_instance = id.to_owned();
+        Ok(())
+    }
+
+    pub fn set_instance_version(&mut self, version: Option<&str>) -> Result<(), String> {
+        let Some(instance) = self.instances.iter_mut()
+            .find(|instance| instance.id == self.selected_instance) else {
+                return Err("No active instance".into());
+            };
+        instance.version = version.map(str::to_owned);
+        Ok(())
+    }
+
+    pub fn remove_instance(&mut self, id: &str) -> Result<(), String> {
+        if id == "default" { return Err("The default instance cannot be removed".into()); }
+        let Some(index) = self.instances.iter().position(|instance| instance.id == id) else {
+            return Err("That instance no longer exists".into());
+        };
+        self.instances.remove(index);
+        if self.selected_instance == id { self.selected_instance = "default".into(); }
+        Ok(())
     }
 }
 #[derive(Clone, Copy, PartialEq)]

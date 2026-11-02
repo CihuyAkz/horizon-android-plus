@@ -12,6 +12,7 @@ import subprocess
 import zipfile
 import json
 import hashlib
+import re
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGETS = {'x86_64': 'x86_64-linux-android', 'arm64-v8a': 'aarch64-linux-android',
@@ -140,20 +141,31 @@ def main():
     environment['CARGO_PROFILE_DEV_DEBUG'] = '0'
     environment['HORIZON_ANDROID_PUBLIC'] = '1' if args.public else '0'
     try:
-        environment['HORIZON_ANDROID_BUILD_COMMIT'] = subprocess.check_output(
-            ['git', 'rev-parse', '--short=12', 'HEAD'], cwd=ROOT,
+        full_commit = subprocess.check_output(
+            ['git', 'rev-parse', 'HEAD'], cwd=ROOT,
             stderr=subprocess.DEVNULL, text=True).strip()
+        environment['HORIZON_ANDROID_BUILD_COMMIT'] = full_commit[:12]
         environment['HORIZON_ANDROID_BUILD_DIRTY'] = str(bool(subprocess.check_output(
             ['git', 'status', '--porcelain', '--untracked-files=no'], cwd=ROOT,
             stderr=subprocess.DEVNULL, text=True).strip())).lower()
     except (OSError, subprocess.CalledProcessError):
-        environment['HORIZON_ANDROID_BUILD_COMMIT'] = 'source-export'
+        full_commit = 'source-export'
+        environment['HORIZON_ANDROID_BUILD_COMMIT'] = full_commit
         environment['HORIZON_ANDROID_BUILD_DIRTY'] = 'unknown'
+    cargo_lock_sha = hashlib.sha256((ROOT / 'Cargo.lock').read_bytes()).hexdigest()
+    runtime_fingerprint = hashlib.sha256(
+        (full_commit + '|' + args.abi + '|' + cargo_lock_sha + '|' + args.profile + '|' + str(args.public) + '|android-runtime-v1').encode('utf-8')
+    ).hexdigest()[:12]
+    revision_prefix = re.sub(r'[^A-Za-z0-9._-]', '-', full_commit[:7]).strip('-') or 'unknown'
+    runtime_id = f"native-{revision_prefix}-{runtime_fingerprint}"
+    environment['HORIZON_ANDROID_BUILD_VERSION'] = runtime_id
+    environment['HORIZON_ANDROID_ABI'] = args.abi
+    flags = environment.get('CARGO_ENCODED_RUSTFLAGS', '').split('\x1f') if environment.get('CARGO_ENCODED_RUSTFLAGS') else environment.get('RUSTFLAGS', '').split()
     if args.release_candidate:
-        flags = environment.get('CARGO_ENCODED_RUSTFLAGS', '').split('\x1f') if environment.get('CARGO_ENCODED_RUSTFLAGS') else environment.get('RUSTFLAGS', '').split()
         for original, replacement in [(Path.home(), '/build'), (ROOT, '/horizon')]:
             for prefix in dict.fromkeys([str(original), original.as_posix()]):
                 flags.append(f'--remap-path-prefix={prefix}={replacement}')
+    if flags:
         environment['CARGO_ENCODED_RUSTFLAGS'] = '\x1f'.join(flags)
     if args.check or args.clippy:
         for selection, host_features in manifests:
@@ -164,26 +176,82 @@ def main():
         return
     if not args.skip_rust:
         for selection, host_features in manifests:
-            run(['cargo', 'build', *selection, '--target', target, '--profile', args.profile, *host_features], cwd=ROOT, env=environment)
+            # Apply the runtime SONAME only to the final Android cdylib. Global RUSTFLAGS would
+            # also affect host build scripts and proc-macros.
+            run(['cargo', 'rustc', *selection, '--target', target, '--profile', args.profile,
+                 *host_features, '--', '-C', 'link-arg=-Wl,-soname,libhorizon_runtime.so'],
+                cwd=ROOT, env=environment)
     if args.rust_only:
         return
     output = ROOT / '.local/android/apk' / args.abi
     output.mkdir(parents=True, exist_ok=True)
     staging = ROOT / '.local/android/gradle-jni' / args.abi
     staging.mkdir(parents=True, exist_ok=True)
-    (staging / 'libhorizon_android_native.so').unlink(missing_ok=True)
-    for name in ('libhorizon_android.so',):
-        library = target_dir / target / ('debug' if args.profile == 'dev' else args.profile) / name
-        if not library.is_file():
-            raise FileNotFoundError(library)
-        shutil.copyfile(library, staging / name)
-        run([ndk / 'bin' / ('llvm-strip' + suffix), '--strip-unneeded', staging / name])
-        if args.profile == 'release':
-            save_crash_symbols(library, staging / name, args.abi,
-                               ndk / 'bin' / ('llvm-objcopy' + suffix),
-                               environment.get('HORIZON_ANDROID_BUILD_COMMIT', 'unknown'))
+    for stale in staging.glob('*.so'):
+        stale.unlink()
+    rust_library = target_dir / target / ('debug' if args.profile == 'dev' else args.profile) / 'libhorizon_android.so'
+    if not rust_library.is_file():
+        raise FileNotFoundError(rust_library)
+    readelf = ndk / 'bin' / ('llvm-readelf' + suffix)
+    dynamic_info = subprocess.check_output([str(readelf), '-d', str(rust_library)], text=True)
+    if 'libhorizon_runtime.so' not in dynamic_info:
+        raise RuntimeError(
+            'The Android runtime was not linked with SONAME libhorizon_runtime.so. '
+            'Rebuild without --skip-rust so the versioned runtime can be loaded beside the stable launcher.'
+        )
+    exported_symbols = subprocess.check_output([str(readelf), '--dyn-syms', '--wide', str(rust_library)], text=True)
+    required_symbols = (
+        'ANativeActivity_onCreate',
+        'Java_dev_horizon_android_HorizonActivity_nativeWebCommand',
+        'Java_dev_horizon_android_HorizonActivity_nativeWebStatus',
+        'Java_dev_horizon_android_HorizonActivity_nativeDocumentResult',
+    )
+    missing_symbols = [symbol for symbol in required_symbols if symbol not in exported_symbols]
+    if missing_symbols:
+        raise RuntimeError('The Android runtime is missing required loader exports: ' + ', '.join(missing_symbols))
+
+    # The game is a versioned plugin; libhorizon_android.so is a stable NativeActivity
+    # loader. This allows different compatible Android Horizon builds to be selected per instance.
+    runtime_library = staging / 'libhorizon_runtime.so'
+    shutil.copyfile(rust_library, runtime_library)
+    run([ndk / 'bin' / ('llvm-strip' + suffix), '--strip-unneeded', runtime_library])
+    if args.profile == 'release':
+        save_crash_symbols(rust_library, runtime_library, args.abi,
+                           ndk / 'bin' / ('llvm-objcopy' + suffix),
+                           environment.get('HORIZON_ANDROID_BUILD_COMMIT', 'unknown'))
+
+    loader_source = ROOT / 'packaging/android/native/horizon_loader.c'
+    loader_library = staging / 'libhorizon_android.so'
+    run([clang, '-std=c11', '-O2', '-fPIC', '-shared', '-Wall', '-Wextra',
+         '-Werror', loader_source, '-o', loader_library, '-Wl,-soname,libhorizon_android.so',
+         '-landroid', '-llog', '-ldl'])
+
+    version_source = (ROOT / 'crates/horizon-core/src/version.rs').read_text(encoding='utf-8')
+    match = re.search(r'VANILLA_VERSION\s*:\s*&str\s*=\s*"([^"]+)"', version_source)
+    minecraft_version = match.group(1) if match else 'unknown'
+    library_sha256 = hashlib.sha256(runtime_library.read_bytes()).hexdigest()
+    runtime_manifest = {
+        'schema': 1,
+        'id': runtime_id,
+        'commit': environment['HORIZON_ANDROID_BUILD_COMMIT'],
+        'abi': args.abi,
+        'minecraftVersion': minecraft_version,
+        'target': target,
+        'library': 'libhorizon_runtime.so',
+        'sha256': library_sha256,
+    }
+    runtime_manifest_text = json.dumps(runtime_manifest, indent=2, sort_keys=True) + '\n'
     assets = ROOT / '.local/android/gradle-assets'
     assets.mkdir(parents=True, exist_ok=True)
+    (assets / 'horizon-runtime.json').write_text(runtime_manifest_text, encoding='utf-8')
+
+    runtime_output = ROOT / '.local/android/runtime' / args.abi
+    runtime_output.mkdir(parents=True, exist_ok=True)
+    runtime_bundle = runtime_output / (runtime_id + '-' + args.abi + '.hruntime.zip')
+    with zipfile.ZipFile(runtime_bundle, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as bundle:
+        bundle.writestr('runtime.json', runtime_manifest_text)
+        bundle.write(runtime_library, 'libhorizon_runtime.so')
+    print(f'Android Horizon runtime bundle: {runtime_bundle}', flush=True)
     shutil.copyfile(ROOT / 'LICENSE', assets / 'LICENSE.txt')
     shutil.copyfile(ROOT / 'THIRD_PARTY_NOTICES.md', assets / 'THIRD_PARTY_NOTICES.md')
     shutil.copyfile(engine_data(args.public), assets / 'engine-data.zip')

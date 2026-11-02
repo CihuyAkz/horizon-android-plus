@@ -11,6 +11,85 @@ pub(super) fn web_status() -> String {
     WEB_STATUS.get_or_init(|| Mutex::new(r#"{"connected":true}"#.into()))
         .lock().unwrap_or_else(|error| error.into_inner()).clone()
 }
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AndroidRuntimeManifest {
+    schema: u32,
+    id: String,
+    abi: String,
+    minecraft_version: String,
+    commit: String,
+    sha256: String,
+}
+
+fn runtime_dir(home: &std::path::Path, id: &str) -> PathBuf {
+    home.join("horizon-runtimes").join(id)
+}
+
+fn read_runtime_manifest(home: &std::path::Path, id: &str) -> Option<AndroidRuntimeManifest> {
+    if !crate::catalog::valid_runtime_id(id) { return None; }
+    let dir = runtime_dir(home, id);
+    let meta = std::fs::symlink_metadata(&dir).ok()?;
+    if !meta.is_dir() || meta.file_type().is_symlink() { return None; }
+    let lib = dir.join("libhorizon_runtime.so");
+    let lib_meta = std::fs::symlink_metadata(&lib).ok()?;
+    if !lib_meta.is_file() || lib_meta.file_type().is_symlink() { return None; }
+    let manifest_path = dir.join("runtime.json");
+    let manifest_meta = std::fs::symlink_metadata(&manifest_path).ok()?;
+    if !manifest_meta.is_file() || manifest_meta.file_type().is_symlink() || manifest_meta.len() > 16 * 1024 {
+        return None;
+    }
+    let bytes = std::fs::read(manifest_path).ok()?;
+    let manifest: AndroidRuntimeManifest = serde_json::from_slice(&bytes).ok()?;
+    (manifest.schema == 1
+        && manifest.id == id
+        && manifest.abi == crate::android_runtime_abi()
+        && manifest.minecraft_version == horizon_core::VANILLA_VERSION
+        && manifest.sha256.len() == 64
+        && manifest.sha256.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then_some(manifest)
+}
+
+fn installed_runtime(home: &std::path::Path, id: &str) -> bool {
+    read_runtime_manifest(home, id).is_some()
+}
+
+fn runtime_versions(home: &std::path::Path, loaded: &str) -> Vec<serde_json::Value> {
+    let mut versions = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(home.join("horizon-runtimes")) {
+        for entry in entries.flatten() {
+            let Some(id) = entry.file_name().to_str().map(str::to_owned) else { continue; };
+            let Some(manifest) = read_runtime_manifest(home, &id) else { continue; };
+            let label = format!("{} · {}", id, manifest.commit);
+            let current = id == loaded;
+            versions.push(serde_json::json!({
+                "id": id,
+                "label": label,
+                "installed": true,
+                "current": current,
+                "abi": manifest.abi.clone(),
+                "minecraftVersion": manifest.minecraft_version.clone(),
+            }));
+        }
+    }
+    let apk_default = std::fs::read_to_string(home.join("horizon-runtime-default.txt"))
+        .unwrap_or_else(|_| crate::android_runtime_version());
+    if !versions.iter().any(|item| item["id"].as_str() == Some(apk_default.trim())) {
+        if let Some(manifest) = read_runtime_manifest(home, apk_default.trim()) {
+            versions.push(serde_json::json!({
+                "id": manifest.id.clone(),
+                "label": format!("{} · {}", manifest.id, manifest.commit),
+                "installed": true,
+                "current": manifest.id.as_str() == loaded,
+                "abi": manifest.abi.clone(),
+                "minecraftVersion": manifest.minecraft_version.clone(),
+            }));
+        }
+    }
+    versions.sort_by(|a, b| b["id"].as_str().cmp(&a["id"].as_str()));
+    versions
+}
+
 pub(crate) fn session_argument() -> Option<PathBuf> {
     SESSION.with(|s| s.borrow_mut().take())
 }
@@ -151,6 +230,10 @@ impl Launcher {
         }
         worlds.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
         let signed_in = self.login.signed_in;
+        let apk_runtime = std::fs::read_to_string(self.home.join("horizon-runtime-default.txt"))
+            .unwrap_or_else(|_| crate::android_runtime_version()).trim().to_owned();
+        let loaded_runtime = std::fs::read_to_string(self.home.join("horizon-runtime-selection.txt"))
+            .unwrap_or_else(|_| apk_runtime.clone()).trim().to_owned();
         let content_operation = crate::documents::take_web_result().map(|(id, kind, message)| {
             serde_json::json!({
                 "id": id,
@@ -177,6 +260,18 @@ impl Launcher {
         let value = serde_json::json!({
             "connected": true,
             "version": horizon_core::VANILLA_VERSION,
+            "runtimeVersion": loaded_runtime,
+            "apkRuntimeVersion": apk_runtime,
+            "runtimeAbi": crate::android_runtime_abi(),
+            "runtimeVersions": runtime_versions(&self.home, &loaded_runtime),
+            "upstreamNightly": crate::release_feed::status(&self.home, crate::android_runtime_abi()),
+            "activeInstanceId": self.catalog.config.active_instance().id,
+            "instances": self.catalog.config.instances.iter().map(|instance| serde_json::json!({
+                "id": instance.id,
+                "name": instance.name,
+                "version": instance.version,
+                "resolvedVersion": instance.version.as_deref().unwrap_or("follow-current"),
+            })).collect::<Vec<_>>(),
             "installed": horizon_client::official_install::ready(&self.home),
             "installing": installing,
             "busy": installing || self.session_worker.is_some() || crate::documents::busy(),
@@ -344,7 +439,8 @@ impl Launcher {
 
     fn handle_web_commands(&mut self, events: &ActiveEventLoop) {
         for (action, payload) in crate::take_web_commands() {
-            let result: Result<()> = match action {
+            let result: Result<()> = (|| {
+                match action {
                 1 => self.action(events),
                 2 => {
                     self.login.start(&self.catalog.config.microsoft_client_id);
@@ -357,15 +453,24 @@ impl Launcher {
                     Ok(())
                 }
                 4 => {
-                    let kind = match payload.as_str() {
+                    let (kind_name, shader_mode) = match payload.strip_prefix("shaders:") {
+                        Some("convert") => ("shaders", crate::documents::ShaderImportMode::Convert),
+                        Some("import") => ("shaders", crate::documents::ShaderImportMode::ImportOnly),
+                        Some(_) => return Err("Unsupported shader import mode".into()),
+                        None => (payload.as_str(), crate::documents::ShaderImportMode::Convert),
+                    };
+                    let kind = match kind_name {
                         "mods" => Some(horizon_client::content_files::Kind::Mods),
                         "resourcepacks" => Some(horizon_client::content_files::Kind::Packs),
                         "shaders" => Some(horizon_client::content_files::Kind::Shaders),
                         _ => None,
                     };
                     if let Some(kind) = kind {
-                        crate::documents::begin(kind, self.catalog.config.game_home(&self.home))
-                            .map_err(Into::into)
+                        crate::documents::begin_with_shader_mode(
+                            kind,
+                            self.catalog.config.game_home(&self.home),
+                            shader_mode,
+                        ).map_err(Into::into)
                     } else {
                         Err("Unsupported content type".into())
                     }
@@ -400,8 +505,80 @@ impl Launcher {
                 11 => crate::performance::export(&self.home).map_err(|error| {
                     std::io::Error::new(std::io::ErrorKind::Other, error).into()
                 }),
-                _ => Ok(()),
-            };
+                12 => {
+                    let request: serde_json::Value = serde_json::from_str(&payload)
+                        .map_err(|error| error.to_string())?;
+                    let name = request.get("name").and_then(serde_json::Value::as_str)
+                        .ok_or_else(|| "Missing instance name".to_string())?;
+                    self.catalog.config.create_instance(name)?;
+                    let game_home = self.catalog.config.game_home(&self.home);
+                    std::fs::create_dir_all(&game_home)?;
+                    crate::backend::set_game_home(game_home.clone());
+                    self.catalog.config.save(&self.home)?;
+                    self.catalog.refresh(&self.home);
+                    Ok(())
+                }
+                13 => {
+                    self.catalog.config.select_instance(payload.trim())?;
+                    let game_home = self.catalog.config.game_home(&self.home);
+                    std::fs::create_dir_all(&game_home)?;
+                    crate::backend::set_game_home(game_home.clone());
+                    self.catalog.config.save(&self.home)?;
+                    self.catalog.refresh(&self.home);
+                    Ok(())
+                }
+                14 => {
+                    let version = payload.trim();
+                    if version.is_empty() {
+                        self.catalog.config.set_instance_version(None)?;
+                        self.catalog.config.save(&self.home)?;
+                        Ok(())
+                    } else if installed_runtime(&self.home, version) {
+                        self.catalog.config.set_instance_version(Some(version))?;
+                        self.catalog.config.save(&self.home)?;
+                        Ok(())
+                    } else {
+                        Err("That Android Horizon build is not installed or is incompatible with this device".into())
+                    }
+                }
+                15 => {
+                    let id = payload.trim().to_owned();
+                    let profile_home = self.catalog.config.profile_home(&self.home);
+                    self.catalog.config.remove_instance(&id)?;
+                    if id != "default" {
+                        let target = profile_home.join("instances").join(&id);
+                        if target.exists() {
+                            let metadata = std::fs::symlink_metadata(&target)?;
+                            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                                return Err("Instance folder is not a regular directory".into());
+                            }
+                            std::fs::remove_dir_all(target)?;
+                        }
+                    }
+                    self.catalog.config.save(&self.home)?;
+                    let game_home = self.catalog.config.game_home(&self.home);
+                    std::fs::create_dir_all(&game_home)?;
+                    crate::backend::set_game_home(game_home);
+                    self.catalog.refresh(&self.home);
+                    Ok(())
+                }
+                16 => {
+                    let id = payload.trim();
+                    if installed_runtime(&self.home, id) {
+                        self.catalog.status = format!("Installed Horizon build {id}");
+                        self.error = None;
+                        Ok(())
+                    } else {
+                        Err("The imported Horizon runtime failed validation".into())
+                    }
+                }
+                17 => {
+                    crate::release_feed::refresh();
+                    Ok(())
+                }
+                    _ => Ok(()),
+                }
+            })();
             if let Err(error) = result { self.fail(error); }
         }
         self.publish_web_status();
@@ -420,6 +597,7 @@ impl Launcher {
             }
         });
         let catalog = Catalog::new(&home);
+        crate::backend::set_game_home(catalog.config.game_home(&home));
         crate::configure_input_mode(catalog.config.input_host);
         crate::device_runtime::configure(catalog.config.device);
         Self {
@@ -565,6 +743,12 @@ impl Launcher {
         crate::configure_input_mode(self.catalog.config.input_host);
         crate::device_runtime::configure(self.catalog.config.device);
         if horizon_client::official_install::ready(&self.home) {
+            let current_runtime = crate::android_runtime_version();
+            if let Some(pinned) = self.catalog.config.active_instance().version.as_deref()
+                && pinned != current_runtime
+            {
+                return Err(format!("Instance requires {pinned}, but this APK contains {current_runtime}. Install an Android build for that version first."));
+            }
             horizon_client::android_resources::repair_structure_transforms(
                 &self.home.join("engine-data.zip"),
                 &self
@@ -621,6 +805,7 @@ impl Launcher {
             }
             self.session_ready = false;
             std::fs::create_dir_all(&game_home)?;
+            crate::backend::set_game_home(game_home.clone());
             std::env::set_current_dir(game_home)?;
             self.audio = None;
             self.error = None;
