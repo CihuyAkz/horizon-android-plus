@@ -436,6 +436,89 @@ pub extern "system" fn document_result(
         notice_for_kind(message, false, Some(operation_kind));
     }
 }
+fn save_shader_conversion_report(
+    shaderpacks_dir: &std::path::Path,
+    stamp: u128,
+    report: &str,
+) -> Result<String> {
+    use std::io::Write as _;
+
+    let report_dir = shaderpacks_dir.join(".horizon-shaderport-reports");
+    std::fs::create_dir_all(&report_dir)?;
+    let metadata = std::fs::symlink_metadata(&report_dir)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err("Refusing a redirected shader conversion report directory".into());
+    }
+
+    let report_name = format!("conversion-{stamp}.md");
+    let temporary = report_dir.join(format!(".report-{stamp}.tmp"));
+    let destination = report_dir.join(&report_name);
+    let result = (|| -> Result<()> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        file.write_all(report.as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(&temporary, &destination)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result?;
+    Ok(format!(".horizon-shaderport-reports/{report_name}"))
+}
+
+fn convert_classic_shader_pack(
+    source: &std::path::Path,
+    destination: &std::path::Path,
+    cache: &std::path::Path,
+    pack_name: &str,
+    stamp: u128,
+) -> Result<(usize, String, String, String)> {
+    let converted_archive = cache.join(format!(".shader-converted-{stamp}.zip"));
+    let result = (|| -> Result<(usize, String, String, String)> {
+        update_shader_progress("Running Horizon shader converter", 88);
+        let conversion = crate::shaderport::convert(source, &converted_archive, pack_name)
+            .map_err(|error| format!("Shader conversion failed: {error}"))?;
+        if CANCEL.load(Ordering::Relaxed) {
+            return Err("Shader conversion cancelled".into());
+        }
+        update_shader_progress("Validating converted shader archive", 92);
+        let archive_name = format!("{pack_name}.zip");
+        let native_shader = content_files::validate_with_progress(
+            &converted_archive,
+            Kind::Shaders,
+            &archive_name,
+            || CANCEL.load(Ordering::Relaxed),
+            |_, _| {},
+        )?;
+        if native_shader {
+            return Err("The shader converter returned an unexpected native shader archive".into());
+        }
+        update_shader_progress("Extracting converted shader files", 94);
+        content_files::extract_shader_archive_with_progress(
+            &converted_archive,
+            destination,
+            || CANCEL.load(Ordering::Relaxed),
+            |_, _| {},
+        )?;
+        Ok((
+            conversion.rules_applied,
+            conversion.before_summary,
+            conversion.after_summary,
+            conversion.report,
+        ))
+    })();
+    remove_path(&converted_archive);
+    if result.is_err() {
+        remove_path(destination);
+    }
+    result
+}
+
+
 fn stage(request: Request, mut input: std::fs::File, name: String) -> Result<()> {
     if !content_files::plain_name(&name) || !request.kind.accepts(&name) {
         return Err("Selected file has the wrong extension for this folder".into());
@@ -532,7 +615,7 @@ fn stage(request: Request, mut input: std::fs::File, name: String) -> Result<()>
         let classic_shader = request.kind == Kind::Shaders
             && name.to_ascii_lowercase().ends_with(".zip")
             && !native_shader;
-        let mut shader_compatibility = None;
+        let mut shader_conversion = None;
         let (target, installed_path) = if classic_shader {
             let stem = PathBuf::from(&name)
                 .file_stem()
@@ -562,23 +645,41 @@ fn stage(request: Request, mut input: std::fs::File, name: String) -> Result<()>
                     }
                 },
             )?;
-            if request.shader_mode == ShaderImportMode::Convert {
-                if is_shader {
-                    update_shader_progress("Checking Horizon compatibility", 88);
-                }
-                shader_compatibility = content_files::check_and_convert_classic_shader(&extracted)
-                    .map_err(|error| {
+            let installed_path = if request.shader_mode == ShaderImportMode::Convert {
+                let converted = dir.join(format!(".import-converted-{stamp}"));
+                match convert_classic_shader_pack(
+                    &extracted,
+                    &converted,
+                    &request.cache,
+                    &stem,
+                    stamp,
+                ) {
+                    Ok((rules_applied, before, after, report)) => {
+                        let report_path = match save_shader_conversion_report(&dir, stamp, &report) {
+                            Ok(path) => path,
+                            Err(error) => {
+                                remove_path(&extracted);
+                                remove_path(&converted);
+                                return Err(error);
+                            }
+                        };
+                        shader_conversion = Some((rules_applied, before, after, report_path));
                         remove_path(&extracted);
-                        error
-                    })?;
-                if is_shader {
-                    update_shader_progress("Applying Horizon shader fix", 93);
+                        converted
+                    }
+                    Err(error) => {
+                        remove_path(&extracted);
+                        return Err(error);
+                    }
                 }
-            } else if is_shader {
-                update_shader_progress("Preparing imported shader files", 93);
-            }
+            } else {
+                if is_shader {
+                    update_shader_progress("Preparing imported shader files", 93);
+                }
+                extracted
+            };
             let _ = std::fs::remove_file(&staged);
-            (dir.join(stem), extracted)
+            (dir.join(stem), installed_path)
         } else {
             (dir.join(&name), staged.clone())
         };
@@ -588,16 +689,20 @@ fn stage(request: Request, mut input: std::fs::File, name: String) -> Result<()>
                     "Imported {name} without conversion. Shader files were extracted unchanged."
                 )
             } else {
-                match shader_compatibility {
-                    Some(true) => format!(
-                        "Converted {name} for Horizon. Only shaders/lib/common.glsl was changed; other shader files were preserved."
-                    ),
-                    Some(false) => format!(
-                        "{name} is already Horizon-compatible. No shader source files were changed."
-                    ),
-                    None => format!(
-                        "{name} was imported unchanged. No verified Horizon conversion rule matched this shader ZIP."
-                    ),
+                let (rules_applied, before, after, report_path) = shader_conversion.unwrap_or((
+                    0,
+                    "Compatibility scan unavailable".into(),
+                    "No conversion summary".into(),
+                    "Report unavailable".into(),
+                ));
+                if rules_applied > 0 {
+                    format!(
+                        "Converted {name} for Horizon. Applied {rules_applied} translator rule(s). Before: {before}. After: {after}. Report: {report_path}."
+                    )
+                } else {
+                    format!(
+                        "Conversion completed for {name}; no rewrite rules matched. The converted output was still reloaded and validated. Before: {before}. After: {after}. Report: {report_path}."
+                    )
                 }
             }
         } else {
