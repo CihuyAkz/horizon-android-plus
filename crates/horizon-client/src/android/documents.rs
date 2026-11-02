@@ -264,6 +264,52 @@ pub extern "system" fn document_result(
         notice(message, false);
     }
 }
+fn legacy_shader_description(result: Option<bool>) -> &'static str {
+    match result {
+        Some(true) => "the known cloud-height compatibility line was updated",
+        Some(false) => "the known cloud-height compatibility line was already updated",
+        None => "no additional known single-line fix matched",
+    }
+}
+
+fn save_shader_conversion_report(
+    home: &std::path::Path,
+    stamp: u128,
+    report: &str,
+) -> Option<String> {
+    if report.len() > 8 << 20 {
+        return None;
+    }
+    let directory = home.join("reports");
+    match std::fs::symlink_metadata(&directory) {
+        Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => {}
+        Ok(_) => return None,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if std::fs::create_dir_all(&directory).is_err() {
+                return None;
+            }
+            let Ok(meta) = std::fs::symlink_metadata(&directory) else {
+                return None;
+            };
+            if !meta.is_dir() || meta.file_type().is_symlink() {
+                return None;
+            }
+        }
+        Err(_) => return None,
+    }
+    let filename = format!("shaderport-{stamp}.md");
+    let path = directory.join(&filename);
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .ok()?;
+    use std::io::Write as _;
+    file.write_all(report.as_bytes()).ok()?;
+    file.sync_all().ok()?;
+    Some(format!("reports/{filename}"))
+}
+
 fn stage(request: Request, mut input: std::fs::File, name: String) -> Result<()> {
     if !content_files::plain_name(&name) || !request.kind.accepts(&name) {
         return Err("Selected file has the wrong extension for this folder".into());
@@ -326,7 +372,7 @@ fn stage(request: Request, mut input: std::fs::File, name: String) -> Result<()>
         let classic_shader = request.kind == Kind::Shaders
             && name.to_ascii_lowercase().ends_with(".zip")
             && !native_shader;
-        let mut shader_compatibility = None;
+        let mut shader_conversion_message = None;
         let (target, installed_path) = if classic_shader {
             let stem = PathBuf::from(&name)
                 .file_stem()
@@ -340,28 +386,90 @@ fn stage(request: Request, mut input: std::fs::File, name: String) -> Result<()>
             content_files::extract_shader_archive(&staged, &extracted, || {
                 CANCEL.load(Ordering::Relaxed)
             })?;
-            shader_compatibility = content_files::check_and_convert_classic_shader(&extracted)
-                .map_err(|error| {
-                    remove_path(&extracted);
-                    error
-                })?;
             let _ = std::fs::remove_file(&staged);
-            (dir.join(stem), extracted)
+            let converted_zip = request.cache.join(format!(".shaderport-{stamp}.zip"));
+            let converted_dir = dir.join(format!(".shaderport-{stamp}"));
+            notice(format!("Analyzing and converting {name}..."), false);
+            let conversion = crate::shaderport::convert(&extracted, &converted_zip, &name);
+            if CANCEL.load(Ordering::Relaxed) {
+                remove_path(&converted_zip);
+                remove_path(&converted_dir);
+                remove_path(&extracted);
+                return Err("Import cancelled".into());
+            }
+            match conversion {
+                Ok(result) => {
+                    let extraction = content_files::extract_shader_archive(
+                        &converted_zip,
+                        &converted_dir,
+                        || CANCEL.load(Ordering::Relaxed),
+                    );
+                    if CANCEL.load(Ordering::Relaxed) {
+                        remove_path(&converted_dir);
+                        remove_path(&converted_zip);
+                        remove_path(&extracted);
+                        return Err("Import cancelled".into());
+                    }
+                    if extraction.is_ok() {
+                        remove_path(&extracted);
+                        remove_path(&converted_zip);
+                        let report = save_shader_conversion_report(
+                            &request.home,
+                            stamp,
+                            &result.report,
+                        );
+                        let report_note = report
+                            .map(|path| format!(" Report saved to {path}."))
+                            .unwrap_or_default();
+                        shader_conversion_message = Some(format!(
+                            "Shader Converter processed {name}: {} → {}; {} rewrite rules applied.{}",
+                            result.before_summary,
+                            result.after_summary,
+                            result.rules_applied,
+                            report_note,
+                        ));
+                        (dir.join(stem), converted_dir)
+                    } else {
+                        remove_path(&converted_dir);
+                        remove_path(&converted_zip);
+                        if CANCEL.load(Ordering::Relaxed) {
+                            remove_path(&extracted);
+                            return Err("Import cancelled".into());
+                        }
+                        let legacy = content_files::check_and_convert_classic_shader(&extracted).unwrap_or(None);
+                        shader_conversion_message = Some(format!(
+                            "The full Shader Converter could not prepare its output. {name} was imported with the previous compatibility fallback ({}).",
+                            legacy_shader_description(legacy),
+                        ));
+                        (dir.join(stem), extracted)
+                    }
+                }
+                Err(_) => {
+                    remove_path(&converted_zip);
+                    if CANCEL.load(Ordering::Relaxed) {
+                        remove_path(&converted_dir);
+                        remove_path(&extracted);
+                        return Err("Import cancelled".into());
+                    }
+                    let legacy = content_files::check_and_convert_classic_shader(&extracted).unwrap_or(None);
+                    shader_conversion_message = Some(format!(
+                        "The full Shader Converter could not complete. {name} was imported with the previous compatibility fallback ({}).",
+                        legacy_shader_description(legacy),
+                    ));
+                    (dir.join(stem), extracted)
+                }
+            }
         } else {
             (dir.join(&name), staged.clone())
         };
+        if CANCEL.load(Ordering::Relaxed) {
+            remove_path(&installed_path);
+            return Err("Import cancelled".into());
+        }
         let outcome = if classic_shader {
-            match shader_compatibility {
-                Some(true) => format!(
-                    "Converted {name} for Horizon. Only shaders/lib/common.glsl was changed; other shader files were preserved."
-                ),
-                Some(false) => format!(
-                    "{name} is already Horizon-compatible. No shader source files were changed."
-                ),
-                None => format!(
-                    "{name} was imported unchanged. No verified Horizon conversion rule matched this shader ZIP."
-                ),
-            }
+            shader_conversion_message.unwrap_or_else(|| {
+                format!("Imported {name} as a classic shader pack.")
+            })
         } else {
             format!(
                 "Imported {} into {}. Enable it in game settings.",

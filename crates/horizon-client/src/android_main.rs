@@ -37,6 +37,8 @@ mod document_provider;
 mod document_store;
 #[path = "android/documents.rs"]
 mod documents;
+#[path = "../../horizon-android/src/shaderport/mod.rs"]
+mod shaderport;
 #[path = "android/exit_reports.rs"]
 mod exit_reports;
 #[path = "android/gallery.rs"]
