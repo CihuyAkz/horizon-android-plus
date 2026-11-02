@@ -7,7 +7,7 @@
     <uses-feature android:glEsVersion="0x00030000" android:required="true" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <uses-feature android:name="android.software.leanback" android:required="false" />
-    <application android:label="Horizon Android" android:appCategory="game" android:icon="@drawable/launcher_icon" android:banner="@drawable/tv_banner" android:extractNativeLibs="true" android:usesCleartextTraffic="false">
+    <application android:label="Horizon Android +" android:appCategory="game" android:icon="@drawable/launcher_icon" android:banner="@drawable/tv_banner" android:extractNativeLibs="true" android:usesCleartextTraffic="false">
         <provider android:name="dev.horizon.android.HorizonDocumentsProvider" android:authorities="${applicationId}.documents" android:exported="true" android:grantUriPermissions="true" android:permission="android.permission.MANAGE_DOCUMENTS">
             <intent-filter>
                 <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
@@ -17,7 +17,7 @@
             <meta-data android:name="android.app.lib_name" android:value="horizon_android" />
         </activity>
         <!-- Keep installed launcher shortcuts targeting the previous component. -->
-        <activity-alias android:name="com.google.androidgamesdk.GameActivity" android:targetActivity="dev.horizon.android.HorizonActivity" android:exported="true">
+        <activity-alias android:name="com.google.androidgamesdk.GameActivity" android:targetActivity="dev.horizon.android.HorizonActivity" android:label="Horizon Android +" android:exported="true">
             <meta-data android:name="android.app.lib_name" android:value="horizon_android" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
