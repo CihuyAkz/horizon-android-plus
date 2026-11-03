@@ -61,6 +61,11 @@ jobs:
             echo "Extracting: $ZIP_FILE"
             echo "=================================="
 
+            if ! unzip -t "$ZIP_FILE"; then
+              echo "ERROR: File ZIP rusak atau tidak valid: $ZIP_FILE"
+              exit 1
+            fi
+
             CURRENT_EXTRACT="/tmp/extracted/$INDEX"
 
             mkdir -p "$CURRENT_EXTRACT"
