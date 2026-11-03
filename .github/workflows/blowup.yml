@@ -32,6 +32,7 @@ jobs:
 
           find . -mindepth 1 -maxdepth 1 \
             ! -name ".github" \
+            ! -name ".git" \
             -exec rm -rf -- {} +
 
           echo "Pembersihan selesai."
