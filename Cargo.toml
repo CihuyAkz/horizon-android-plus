@@ -15,6 +15,7 @@ members = [
     "crates/horizon-items",
     "crates/horizon-server-files",
     "crates/horizon-anticheat",
+    "crates/horizon-chat-filter",
     "crates/horizon-server",
     "crates/horizon-bots",
     "crates/horizon-assets",

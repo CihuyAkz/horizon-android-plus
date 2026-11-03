@@ -1,6 +1,6 @@
 {
   "base": "Original uploaded Android Plus source archive",
-  "target": "Android Plus with earlier UI changes and selective Nightly sync",
+  "target": "Android Plus with earlier UI changes, selective Nightly sync, and missing horizon-chat-filter workspace crate restored for CI",
   "updated": [
     {
       "path": "CLAUDE.md",
@@ -4153,6 +4153,12 @@
       "old_size": 88228,
       "new_size": 88763,
       "sha256": "a5e71300a1afa007a47a41e8d3f0c28505de3999c9ea54879df474bff1bbb005"
+    },
+    {
+      "path": "Cargo.toml",
+      "old_size": 3230,
+      "new_size": 3264,
+      "sha256": "9225c632984b6b59b9ecc973107dfb37e4cb579027315b5dca8112607cdc4b36"
     }
   ],
   "added": [
@@ -5990,6 +5996,31 @@
       "path": "tools/ci/__pycache__/triage_command.cpython-313.pyc",
       "size": 20439,
       "sha256": "689b7a71932520b109810d48f0836d0e19b570b40ed9047d7abe82646b4a41bc"
+    },
+    {
+      "path": "crates/horizon-chat-filter/Cargo.toml",
+      "size": 410,
+      "sha256": "6bab1026934c851def8c014ca7dcb1955e30363b780d2eceaf6468eaa85032b6"
+    },
+    {
+      "path": "crates/horizon-chat-filter/src/lib.rs",
+      "size": 14878,
+      "sha256": "5460b5f13dc85f22b6550259b9662ee9e20208bbe3b17f6c3b66e6a7c882207f"
+    },
+    {
+      "path": "crates/horizon-chat-filter/src/normalise.rs",
+      "size": 9597,
+      "sha256": "35eecbfc3cae711e759ceffc26780b4abb1da7e6e611b2c1e16ee7484bb23362"
+    },
+    {
+      "path": "crates/horizon-chat-filter/src/tests.rs",
+      "size": 7435,
+      "sha256": "a863caad30417d6c3262d66647b62d75ed4aabb2a68b373e2c5bdfac3c241eeb"
+    },
+    {
+      "path": "crates/horizon-chat-filter/data/slurs.txt",
+      "size": 1475,
+      "sha256": "06a7435c07c2fb59a43018267e93b4ef63d14a3894c2248d2eeb1c210d6a537f"
     }
   ],
   "deleted": [
@@ -5997,9 +6028,9 @@
     "official-horizon-runtime-confirmation.patch"
   ],
   "counts": {
-    "updated": 692,
-    "added": 367,
+    "updated": 693,
+    "added": 372,
     "deleted": 2,
-    "files_in_zip": 1059
+    "files_in_zip": 1065
   }
 }
