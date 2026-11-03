@@ -237,8 +237,6 @@ impl Launcher {
             .unwrap_or_else(|_| crate::android_runtime_version()).trim().to_owned();
         let loaded_runtime = std::fs::read_to_string(self.home.join("horizon-runtime-selection.txt"))
             .unwrap_or_else(|_| apk_runtime.clone()).trim().to_owned();
-        let followed_runtime = std::fs::read_to_string(self.home.join("horizon-runtime-follow.txt"))
-            .unwrap_or_else(|_| apk_runtime.clone()).trim().to_owned();
         let content_operation = crate::documents::take_web_result().map(|(id, kind, message)| {
             serde_json::json!({
                 "id": id,
@@ -282,10 +280,8 @@ impl Launcher {
             "version": horizon_core::VANILLA_VERSION,
             "runtimeVersion": loaded_runtime,
             "apkRuntimeVersion": apk_runtime,
-            "followedRuntimeVersion": followed_runtime,
             "runtimeAbi": crate::android_runtime_abi(),
             "runtimeVersions": runtime_versions(&self.home, &loaded_runtime),
-            "upstreamNightly": crate::release_feed::status(&self.home, crate::android_runtime_abi()),
             "activeInstanceId": self.catalog.config.active_instance().id,
             "instances": self.catalog.config.instances.iter().map(|instance| serde_json::json!({
                 "id": instance.id,
@@ -623,10 +619,6 @@ impl Launcher {
                     } else {
                         Err("The imported Horizon runtime failed validation".into())
                     }
-                }
-                17 => {
-                    crate::release_feed::refresh();
-                    Ok(())
                 }
                 18 => {
                     let request: serde_json::Value = serde_json::from_str(&payload)

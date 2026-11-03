@@ -109,7 +109,7 @@ fn data_packs_are_their_own_kind() {
     });
     let p = modrinth::parse_hit(&hit).unwrap();
     assert_eq!(p.kind, Kind::Mod);
-    let p = p.into_datapack();
+    let p = p.as_datapack();
     assert_eq!(
         (p.kind, p.page.as_str()),
         (Kind::DataPack, "https://modrinth.com/datapack/terralith")
@@ -154,9 +154,7 @@ fn modrinth_search_asks_for_what_runs() {
         url.contains("&index=relevance&") && url.ends_with("&query=faithful"),
         "{url}"
     );
-    assert!(
-        modrinth::search_url(&Query::new("", Kind::ResourcePack)).contains("&index=downloads&")
-    );
+    assert!(modrinth::search_url(&Query::new("", Kind::ResourcePack)).contains("&index=downloads&"));
     let everything = Query {
         everything: true,
         ..Query::new("", Kind::ResourcePack)
@@ -426,11 +424,9 @@ fn live_modrinth_search_pick_and_download() {
     for kind in Kind::ALL {
         let found = source.search(&Query::new("", kind)).unwrap();
         assert!(!found.is_empty(), "{kind:?}");
-        assert!(
-            found
-                .iter()
-                .all(|p| p.kind == kind && p.support().installable())
-        );
+        assert!(found
+            .iter()
+            .all(|p| p.kind == kind && p.support().installable()));
     }
     let packs = source
         .search(&Query::new("fresh animations", Kind::ResourcePack))

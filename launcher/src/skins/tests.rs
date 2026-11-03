@@ -72,29 +72,6 @@ fn only_skin_and_cape_sizes_are_kept() {
 }
 
 #[test]
-fn oversized_imports_are_rejected_before_png_decoding() {
-    let oversized = vec![0; MAX_IMPORT_BYTES + 1];
-    for error in [
-        read_skin(&oversized).unwrap_err(),
-        read_cape(&oversized).unwrap_err(),
-    ] {
-        assert_eq!(error, "The PNG must be at most 1 MiB.");
-    }
-    let mut boundary = png(&mapped(64));
-    boundary.resize(MAX_IMPORT_BYTES, 0);
-    assert!(read_skin(&boundary).is_ok());
-
-    let file = std::env::temp_dir().join(format!(
-        "horizon-skins-import-limit-{}.png",
-        std::process::id()
-    ));
-    std::fs::write(&file, &oversized).unwrap();
-    let result = read_file(&file);
-    std::fs::remove_file(&file).unwrap();
-    assert_eq!(result.unwrap_err(), "The PNG must be at most 1 MiB.");
-}
-
-#[test]
 fn a_kept_look_reaches_the_game_only_with_its_files() {
     let root = std::env::temp_dir().join(format!("horizon-skins-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);

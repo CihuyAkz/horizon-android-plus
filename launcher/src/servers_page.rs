@@ -50,13 +50,15 @@ pub(super) enum Field {
     Wrapper,
     LaunchEnv,
     PostExit,
+    /// Home's memory row (`launch_page.rs`).
+    MemoryLimit,
     /// Settings' new offline name (`switch_page.rs`).
     OfflineName,
     DeleteServer,
 }
 
 impl Field {
-    const ALL: [Field; 22] = [
+    const ALL: [Field; 23] = [
         Field::Name,
         Field::Seed,
         Field::Players,
@@ -77,6 +79,7 @@ impl Field {
         Field::Wrapper,
         Field::LaunchEnv,
         Field::PostExit,
+        Field::MemoryLimit,
         Field::OfflineName,
         Field::DeleteServer,
     ];
@@ -267,10 +270,15 @@ impl Servers {
         self.texts.get(&f).map_or("", LineEdit::text)
     }
 
+    /// Whether this field has the keyboard, as of this frame.
+    pub(super) fn has_focus(&self, f: Field) -> bool {
+        self.focused == Some(f)
+    }
+
     /// Which field has the keyboard, read every frame.
-    pub(super) fn note_focus(&mut self, window: &mut Window) {
+    pub(super) fn note_focus(&mut self, window: &mut Window, cx: &mut App) {
         if let Some(h) = self.focus_soon.take().and_then(|f| self.focus.get(&f)) {
-            window.focus(h);
+            window.focus(h, cx);
         }
         self.focused = Field::ALL
             .into_iter()
@@ -925,7 +933,7 @@ impl Launcher {
                     this.servers.selected = None;
                 }
                 if let Some(h) = this.servers.focus.get(&f) {
-                    window.focus(h);
+                    window.focus(h, cx);
                 }
                 cx.notify();
             }))
@@ -950,7 +958,7 @@ impl Launcher {
                             this.servers.create = None;
                         }
                         this.instance_escape();
-                        window.blur();
+                        window.blur(cx);
                     }
                     // Tab and the rest go on to the window: Tab moves the focus.
                     Key::Pass => return,
@@ -1008,6 +1016,7 @@ impl Launcher {
             Field::PreLaunch | Field::Wrapper | Field::LaunchEnv | Field::PostExit => {
                 self.save_launch()
             }
+            Field::MemoryLimit => self.memory_enter(),
             Field::OfflineName => self.offline_name_enter(),
             Field::ServerName | Field::ServerAddress => self.add_server(),
         }
@@ -1160,14 +1169,34 @@ impl Launcher {
         {
             page = page.child(self.problem_notice(p, cx));
         }
-        let partner = super::partner::banner("partner-servers", 600., &t);
+        // The banner, with a "Hide" once it has been on screen a while: hiding it hides the
+        // sidebar's card too, for good. Nothing at all once hidden.
+        let partner = (!self.settings.partner_hidden).then(|| {
+            let mut slot = div().relative().w(px(600.)).child(super::partner::banner(
+                "partner-servers",
+                600.,
+                &t,
+            ));
+            if self.settings.partner_seen_secs >= super::partner::SEEN_BEFORE_HIDE {
+                slot = slot.child(
+                    super::partner::hide_button("partner-servers-hide", &t).on_click(cx.listener(
+                        |this, _: &ClickEvent, _, cx| {
+                            this.settings.partner_hidden = true;
+                            this.settings.save();
+                            cx.notify();
+                        },
+                    )),
+                );
+            }
+            slot
+        });
         if self.servers.list.is_empty() {
             return page
                 .child(centered(
                     tr("No server yet. Create one: it takes a few seconds, and with the defaults (tick the EULA, press Create) you get a friends-only survival world."),
                     &t,
                 ))
-                .child(partner);
+                .children(partner);
         }
         let mut list = div().flex().flex_col().border_t_1().border_color(t.rule);
         for (i, e) in self.servers.list.clone().into_iter().enumerate() {
@@ -1213,7 +1242,7 @@ impl Launcher {
                 &t,
             ));
         }
-        page.child(list).child(partner)
+        page.child(list).children(partner)
     }
 
     fn add_server_folder(&mut self, cx: &mut Context<Self>) {
@@ -3023,7 +3052,7 @@ impl Launcher {
                 .px(px(32.))
                 .py(px(24.))
                 .bg(t.page.opacity(0.92))
-                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                .on_scroll(|_, _, cx| cx.stop_propagation())
                 .occlude()
                 .child(card),
         )

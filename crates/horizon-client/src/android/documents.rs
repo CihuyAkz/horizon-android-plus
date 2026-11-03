@@ -903,9 +903,8 @@ pub fn draw_ui(ui: &mut Ui<'_>) {
     static ANIMATION_START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
     let mut s = STATE.lock().unwrap_or_else(|e| e.into_inner());
     s.hits.clear();
-    if s.conflict.is_none() && !s.working {
-        // The launcher already shows the result in its status line. Keep only
-        // actionable overlays (progress/cancel and a name-conflict choice).
+    if s.conflict.is_none() {
+        // Keep the import-status popup hidden; name-conflict choices remain actionable.
         return;
     }
     let (name, choices) = if let Some(c) = &s.conflict {

@@ -6,24 +6,14 @@
 //! checked before install ([`java`]), modpacks (imported and ported), resource packs
 //! (`resourcepacks/`) and data packs (into a world, [`installed::install_datapack`]). Java code
 //! itself doesn't run in Horizon (docs/mods.md).
-#[path = "browser/curseforge.rs"]
 pub mod curseforge;
-#[path = "browser/details.rs"]
 pub mod details;
-#[path = "browser/download.rs"]
 pub mod download;
-#[path = "browser/horizon.rs"]
 pub mod horizon;
-#[path = "browser/images.rs"]
 pub mod images;
-#[path = "browser/installed.rs"]
 pub mod installed;
-#[path = "browser/java.rs"]
 pub mod java;
-#[cfg(not(target_os = "android"))]
-#[path = "browser/java_instance.rs"]
 pub mod java_instance;
-#[path = "browser/modrinth.rs"]
 pub mod modrinth;
 
 use serde::{Deserialize, Serialize};
@@ -156,7 +146,7 @@ impl Project {
 
     /// The project as a data pack, for a search of data packs or an install into a world;
     /// its page is Modrinth's data pack page.
-    pub fn into_datapack(self) -> Project {
+    pub fn as_datapack(self) -> Project {
         Project {
             page: match self.source {
                 SourceId::Modrinth => format!("https://modrinth.com/datapack/{}", self.slug),
@@ -439,5 +429,4 @@ pub fn safe_name(name: &str) -> Option<&str> {
 }
 
 #[cfg(test)]
-#[path = "browser/tests.rs"]
 mod tests;

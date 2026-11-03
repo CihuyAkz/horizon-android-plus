@@ -93,9 +93,7 @@ fn text(v: &Value) -> String {
 
 /// A search hit. Its `categories` hold the loaders too; `versions` its Minecraft versions.
 pub(super) fn parse_hit(hit: &Value) -> Option<Project> {
-    parse_hit_as(hit, kind_of(hit["project_type"].as_str()?)?)
-}
-fn parse_hit_as(hit: &Value, kind: Kind) -> Option<Project> {
+    let kind = kind_of(hit["project_type"].as_str()?)?;
     let slug = text(&hit["slug"]);
     Some(Project {
         source: SourceId::Modrinth,
@@ -115,25 +113,6 @@ fn parse_hit_as(hit: &Value, kind: Kind) -> Option<Project> {
         game_versions: strings(&hit["versions"]),
         loaders: strings(&hit["categories"]),
     })
-}
-
-/// Explicit opt-in to classic shader ZIP search. The default desktop source keeps
-/// its native-only shader policy; Android labels this catalog experimental.
-pub fn search_shader_packs(query: &Query) -> Result<Vec<Project>, String> {
-    if query.kind != Kind::Shader {
-        return Err("Expected a shader search".into());
-    }
-    let found = get(&search_url(query))?;
-    Ok(shader_hits(&found))
-}
-fn shader_hits(found: &Value) -> Vec<Project> {
-    found["hits"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|hit| hit["project_type"] == "shader")
-        .filter_map(|hit| parse_hit_as(hit, Kind::Shader))
-        .collect()
 }
 
 /// `GET /project/{id}`: the fields differ from a search hit's.
@@ -233,7 +212,7 @@ impl Source for Modrinth {
             .flatten()
             .filter_map(parse_hit)
             .map(|p| match query.kind {
-                Kind::DataPack => p.into_datapack(),
+                Kind::DataPack => p.as_datapack(),
                 _ => p,
             })
             .collect())
@@ -314,24 +293,4 @@ pub(super) fn encode(s: &str) -> String {
             _ => format!("%{b:02X}"),
         })
         .collect()
-}
-
-#[cfg(test)]
-mod shader_tests {
-    use super::*;
-    #[test]
-    fn opt_in_shader_search_does_not_change_the_default_source_policy() {
-        let hit = serde_json::json!({"project_type":"shader", "project_id":"test",
-            "slug":"test-shader", "title":"Test shader", "versions":["26.3"]});
-        assert!(parse_hit(&hit).is_none());
-        let hits = shader_hits(
-            &serde_json::json!({"hits":[hit,{"project_type":"mod","project_id":"not-a-shader"}]}),
-        );
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].kind, Kind::Shader);
-        assert_eq!(hits[0].page, "https://modrinth.com/shader/test-shader");
-        let mut query = Query::new("water", Kind::Shader);
-        query.everything = true;
-        assert_eq!(facets(&query), r#"[["project_type:shader"]]"#);
-    }
 }

@@ -3,7 +3,7 @@
 //! `HORIZON_CURSEFORGE_API_KEY` in the environment, else the same variable when the launcher was
 //! built (the release workflow passes the repository secret). Files carry SHA-1 and MD5; the
 //! download is checked against the SHA-1.
-use super::{FileRef, GAME, Kind, Project, Query, Source, SourceId, Version, modrinth::encode};
+use super::{modrinth::encode, FileRef, Kind, Project, Query, Source, SourceId, Version, GAME};
 use serde_json::Value;
 
 const API: &str = "https://api.curseforge.com/v1";

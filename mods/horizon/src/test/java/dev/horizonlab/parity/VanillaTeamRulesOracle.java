@@ -112,12 +112,6 @@ public final class VanillaTeamRulesOracle {
         }
     }
 
-    static final class ProfilePlayer extends LocalPlayer {
-        com.mojang.authlib.GameProfile profile;
-        ProfilePlayer() { super(null, null, null, null, null, null, false, null, null); }
-        @Override public com.mojang.authlib.GameProfile getGameProfile() { return profile; }
-    }
-
     abstract static class Renderer extends LivingEntityRenderer<LivingEntity, LivingEntityRenderState, net.minecraft.client.model.EntityModel<LivingEntityRenderState>> {
         Renderer() {
             super(null, null, 0.0F);
@@ -170,12 +164,6 @@ public final class VanillaTeamRulesOracle {
                 options(a, c.getAsJsonObject("A"));
                 options(b, c.getAsJsonObject("B"));
                 java.util.function.Function<String, PlayerTeam> team = k -> c.get(k).isJsonNull() ? null : c.get(k).getAsString().equals("A") ? a : b;
-                // Player.getScoreboardName must select the name's team, never the UUID's.
-                ProfilePlayer named = alloc(ProfilePlayer.class);
-                named.profile = new com.mojang.authlib.GameProfile(new java.util.UUID(0, 7), "HiddenNPC");
-                if (!c.get("other").isJsonNull()) board.addPlayerToTeam("HiddenNPC", team.apply("other"));
-                if (!c.get("own").isJsonNull()) board.addPlayerToTeam(named.getGameProfile().id().toString(), team.apply("own"));
-                PlayerTeam namedTeam = board.getPlayersTeam(named.getScoreboardName());
                 Stub own = alloc(Stub.class);
                 own.team = team.apply("own");
                 own.home = level;
@@ -206,12 +194,6 @@ public final class VanillaTeamRulesOracle {
                 JsonObject r = new JsonObject();
                 r.add("case", c.get("case"));
                 try {
-                    r.add("profile_team", namedTeam == null ? JsonNull.INSTANCE : new JsonPrimitive(namedTeam.getName()));
-                    Stub profileOther = alloc(Stub.class);
-                    profileOther.home = level;
-                    profileOther.team = namedTeam;
-                    profileOther.pushable = other.pushable;
-                    r.addProperty("profile_pushes", EntitySelector.pushableBy(own).test(profileOther));
                     r.addProperty("damage", own.doTeamsAllowDamage(other));
                     r.addProperty("allied", own.isAlliedTo((Entity) other));
                     r.addProperty("pushes", EntitySelector.pushableBy(own).test(other));

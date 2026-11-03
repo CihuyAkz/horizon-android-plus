@@ -43,7 +43,6 @@ public final class HorizonActivity extends android.app.NativeActivity {
     private static final int REQUEST_WEB_FILE = 4102;
     private static final int REQUEST_RUNTIME_IMPORT = 4103;
     private static final long MAX_RUNTIME_LIBRARY_BYTES = 384L * 1024L * 1024L;
-    private static final long MAX_RUNTIME_ARCHIVE_BYTES = 512L * 1024L * 1024L;
 
     static { System.loadLibrary("horizon_android"); }
 
@@ -254,21 +253,7 @@ public final class HorizonActivity extends android.app.NativeActivity {
             writeText(new File(defaultDir, "runtime.json"), manifest.toString(2));
             writeText(new File(getFilesDir(), "horizon-runtime-default.txt"), defaultId + "\n");
 
-            String followId = defaultId;
-            File followFile = new File(getFilesDir(), "horizon-runtime-follow.txt");
-            if (followFile.isFile()) {
-                try (FileInputStream input = new FileInputStream(followFile)) {
-                    String followed = readUtf8(input, 256).trim();
-                    if (validRuntimeId(followed)
-                            && verifyRuntimeDirectory(new File(root, followed), followed, abi,
-                                    manifest.getString("minecraftVersion"))) {
-                        followId = followed;
-                    }
-                } catch (Exception followError) {
-                    Log.w("Horizon", "Could not read the latest-follow runtime; using the APK build", followError);
-                }
-            }
-            String selected = followId;
+            String selected = defaultId;
             File configFile = new File(getFilesDir(), "android-launcher.json");
             if (configFile.isFile()) {
                 try (FileInputStream input = new FileInputStream(configFile)) {
@@ -286,21 +271,16 @@ public final class HorizonActivity extends android.app.NativeActivity {
                         }
                     }
                 } catch (Exception parseError) {
-                    Log.w("Horizon", "Could not read selected instance runtime; using latest available build", parseError);
-                    selected = followId;
+                    Log.w("Horizon", "Could not read selected instance runtime; using the APK build", parseError);
+                    selected = defaultId;
                 }
             }
             boolean selectedValid = selected.equals(defaultId)
                     || verifyRuntimeDirectory(new File(root, selected), selected, abi,
                             manifest.getString("minecraftVersion"));
             if (!selectedValid) {
-                Log.w("Horizon", "Selected build is missing or invalid; reverting to the latest available build: " + selected);
-                selected = followId;
-                if (!selected.equals(defaultId)
-                        && !verifyRuntimeDirectory(new File(root, selected), selected, abi,
-                                manifest.getString("minecraftVersion"))) {
-                    selected = defaultId;
-                }
+                Log.w("Horizon", "Selected build is missing or invalid; reverting to the APK build: " + selected);
+                selected = defaultId;
             }
             writeText(new File(getFilesDir(), "horizon-runtime-selection.txt"), selected + "\n");
         } catch (Exception error) {
@@ -326,7 +306,7 @@ public final class HorizonActivity extends android.app.NativeActivity {
             try {
                 InputStream opened = getContentResolver().openInputStream(uri);
                 if (opened == null) throw new java.io.IOException("The selected file cannot be opened");
-                installRuntimeArchive(opened, false);
+                installRuntimeArchive(opened);
             } catch (Exception error) {
                 Log.e("Horizon", "Runtime import failed", error);
                 reportRuntimeImport("Runtime import failed: " + error.getMessage(), false, "");
@@ -336,70 +316,8 @@ public final class HorizonActivity extends android.app.NativeActivity {
         worker.start();
     }
 
-    private void downloadOfficialRuntime(String address, boolean followLatest) {
-        Thread worker = new Thread(() -> {
-            File archive = null;
-            java.net.HttpURLConnection connection = null;
-            try {
-                java.net.URL source = new java.net.URL(address);
-                if (!"https".equalsIgnoreCase(source.getProtocol())
-                        || !"github.com".equalsIgnoreCase(source.getHost())
-                        || !source.getPath().startsWith("/horizon-rust/horizon/releases/download/")) {
-                    throw new java.io.IOException("The Nightly download URL is not an official Horizon release asset");
-                }
-                File cacheRoot = new File(getCacheDir(), "horizon-runtime-downloads");
-                if (!cacheRoot.isDirectory() && !cacheRoot.mkdirs()) {
-                    throw new java.io.IOException("Could not create the runtime download cache");
-                }
-                archive = File.createTempFile("official-nightly-", ".hruntime.zip", cacheRoot);
-                connection = (java.net.HttpURLConnection) source.openConnection();
-                connection.setConnectTimeout(15000);
-                connection.setReadTimeout(60000);
-                connection.setInstanceFollowRedirects(true);
-                connection.setRequestProperty("User-Agent", "Horizon-Android-Plus");
-                connection.setRequestProperty("Accept", "application/octet-stream");
-                int response = connection.getResponseCode();
-                if (response != 200) throw new java.io.IOException("Nightly download returned HTTP " + response);
-                String finalHost = connection.getURL().getHost();
-                if (!"github.com".equalsIgnoreCase(finalHost)
-                        && !"release-assets.githubusercontent.com".equalsIgnoreCase(finalHost)) {
-                    throw new java.io.IOException("The Nightly download redirected to an untrusted host");
-                }
-                long declared = connection.getContentLengthLong();
-                if (declared > MAX_RUNTIME_ARCHIVE_BYTES) {
-                    throw new java.io.IOException("The Android runtime archive exceeds the download limit");
-                }
-                try (InputStream input = connection.getInputStream();
-                     FileOutputStream output = new FileOutputStream(archive)) {
-                    byte[] buffer = new byte[64 * 1024];
-                    long total = 0;
-                    int count;
-                    while ((count = input.read(buffer)) != -1) {
-                        total += count;
-                        if (total > MAX_RUNTIME_ARCHIVE_BYTES) {
-                            throw new java.io.IOException("The Android runtime archive exceeds the download limit");
-                        }
-                        output.write(buffer, 0, count);
-                    }
-                    output.getFD().sync();
-                }
-                try (InputStream input = new FileInputStream(archive)) {
-                    installRuntimeArchive(input, followLatest);
-                }
-            } catch (Exception error) {
-                Log.e("Horizon", "Official Nightly download failed", error);
-                reportRuntimeImport("Nightly installation failed: " + error.getMessage(), false, "");
-            } finally {
-                if (connection != null) connection.disconnect();
-                if (archive != null) archive.delete();
-            }
-        }, "HorizonOfficialNightly");
-        worker.setDaemon(true);
-        worker.start();
-    }
-
     /** Validate the archive and install only its ABI-matched native library and manifest SHA-256. */
-    private void installRuntimeArchive(InputStream opened, boolean followLatest) throws Exception {
+    private void installRuntimeArchive(InputStream opened) throws Exception {
         File temporaryLibrary = null;
         try {
             String abi = currentRuntimeAbi();
@@ -467,8 +385,7 @@ public final class HorizonActivity extends android.app.NativeActivity {
                 throw new java.io.IOException("Could not mark imported runtime read-only");
             }
             writeText(new File(runtimeDir, "runtime.json"), manifest.toString(2));
-            if (followLatest) writeText(new File(getFilesDir(), "horizon-runtime-follow.txt"), id + "\n");
-            reportRuntimeImport((followLatest ? "Installed latest official Horizon Nightly " : "Imported Horizon build ") + id, true, id);
+            reportRuntimeImport("Imported Horizon build " + id, true, id);
         } finally {
             if (temporaryLibrary != null) temporaryLibrary.delete();
         }
@@ -634,10 +551,6 @@ public final class HorizonActivity extends android.app.NativeActivity {
                 try { startActivityForResult(intent, REQUEST_RUNTIME_IMPORT); }
                 catch (Exception error) { reportRuntimeImport("No file picker is available", false, ""); }
             });
-        }
-
-        @JavascriptInterface public void downloadRuntime(String address, boolean followLatest) {
-            downloadOfficialRuntime(address == null ? "" : address, followLatest);
         }
 
         @JavascriptInterface public void restartApp() {

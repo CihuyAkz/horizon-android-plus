@@ -47,8 +47,6 @@ mod gallery;
 mod native_ime;
 #[path = "android/performance.rs"]
 mod performance;
-#[path = "android/release_feed.rs"]
-mod release_feed;
 #[path = "android/platform.rs"]
 mod platform;
 #[rustfmt::skip]

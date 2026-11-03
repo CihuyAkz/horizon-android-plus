@@ -4,7 +4,7 @@
 //! and each Java mod it ported into `horizon-mods/`: where it came from, its version and its
 //! checksum. Files the player put there themselves are never touched: the browser only replaces
 //! or removes what it lists.
-use super::{Kind, Project, Source, SourceId, Support, Version, pick, safe_name};
+use super::{pick, safe_name, Kind, Project, Source, SourceId, Support, Version};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -229,8 +229,10 @@ pub(super) fn put(
         let line = format!("{} {}", p.title, step.version.number);
         let path = source.fetch(file, &home.join(folder_name), &|f| progress(&line, f))?;
         let (algo, hash) = file.checksum().expect("fetch checks for one");
-        if let Some(old) = old.as_ref().filter(|old| old.file != relative) {
-            let _ = fs::remove_file(home.join(&old.file));
+        if let Some(old) = &old {
+            if old.file != relative {
+                let _ = fs::remove_file(home.join(&old.file));
+            }
         }
         let entry = Entry {
             source: p.source,
@@ -317,7 +319,6 @@ pub fn fetch_modpack(
 }
 
 /// A data pack installed into a world.
-#[cfg(not(target_os = "android"))]
 pub struct DataPackInstall {
     pub pack: crate::datapacks::DataPack,
     /// Its version's number.
@@ -329,7 +330,6 @@ pub struct DataPackInstall {
 /// Downloads a project's data pack (checksum checked) into the world folder `world`, under a
 /// free name. Refused when nothing in it runs in Horizon yet. It isn't recorded with the
 /// browser's installs: the world's data pack list (Home, `worlds datapack-list`) has it.
-#[cfg(not(target_os = "android"))]
 pub fn install_datapack(
     source: &dyn Source,
     project: &Project,

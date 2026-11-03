@@ -1,28 +1,9 @@
-HORIZON ANDROID PLUS — HTML LAUNCHER FIX
+HORIZON ANDROID PLUS — COMBINED CHANGES ONLY
 
-This ZIP contains complete replacement files. It does not modify GitHub automatically.
+This archive combines the earlier Android Plus UI changes with the selective Nightly source updates.
 
-REPLACE THESE TWO FILES IN YOUR REPOSITORY:
+Apply: extract the archive contents into the root of your original horizon-android-plus-android source folder and overwrite files when prompted.
 
-1) packaging/android/assets/Horizon-Android-Plus.html
-   Fixes:
-   - Modrinth popular projects load when Downloads is opened, even with an empty search.
-   - Switching Resource Pack / Shader categories triggers a fresh catalog search.
-   - Modrinth version metadata is fetched in one batch so the selected file URL and exact size are available.
-   - File size is shown in bytes, not MB.
-   - The HTML hamburger drawer stays open during page/status re-renders.
+The manifest.json lists updated, added, and deleted paths. Deleted paths are listed for review and are not automatically deleted by extracting this ZIP.
 
-2) crates/horizon-client/src/android/launcher.rs
-   - Makes the bundled HTML/WebView the only visible and interactive launcher UI.
-   - Disables the old Rust-drawn launcher menu and its menu input handling.
-   - Keeps the native Rust backend and command bridge for install, account status/sign-in, Android file picker, settings, and game launch/return.
-   - Fixes the GitHub Actions Rust compilation errors at lines 324 and 334 by removing ambiguous `map_err(Into::into)` conversions and using `?` directly.
-
-The rest of the repository is not included or changed by this ZIP.
-
-VALIDATION
-- The original HTML inline JavaScript passed `node --check`; the HTML file is unchanged in this correction.
-- The two Rust expressions now use direct error propagation so the function return type determines the conversion.
-- A Rust build could not be run in the preparation environment because `cargo` is unavailable. GitHub Actions must verify the full Android build.
-
-After replacing the two files, commit them and run the Android build workflow. Keep the paths exactly as shown above.
+Important: this is a source patch, not a verified APK build. Review platform-specific changes and build/test in your Android environment.

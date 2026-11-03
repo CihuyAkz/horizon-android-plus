@@ -43,13 +43,6 @@ public final class VanillaLocalInputOracle {
         try(var out=new PrintWriter(Files.newBufferedWriter(Path.of(args[1])));var lines=Files.lines(Path.of(args[0]))){
             for(var line:(Iterable<String>)lines::iterator){var f=JsonParser.parseString(line).getAsJsonObject();int mask=f.get("keys").getAsInt();
                 for(int i=0;i<keys.length;i++)down.setBoolean(keys[i],(mask&(1<<i))!=0);
-                if(f.has("stick")) {
-                    var stick=f.getAsJsonArray("stick");float x=number(stick.get(0)),z=number(stick.get(1));
-                    float len=(float)Math.sqrt(x*x+z*z);boolean active=Float.isFinite(len)&&len>number(f.get("deadzone"));
-                    float threshold=Math.max(Math.abs(x),Math.abs(z))*((float)Math.sqrt(2.0)-1.0f);
-                    down.setBoolean(keys[0],active&&z>threshold);down.setBoolean(keys[1],active&&z<-threshold);
-                    down.setBoolean(keys[2],active&&x<-threshold);down.setBoolean(keys[3],active&&x>threshold);
-                }
                 keyboard.tick();var direction=keyboard.getMoveVector();
                 Vec2 vector=direction;if(f.has("vector")){var v=f.getAsJsonArray("vector");vector=new Vec2(number(v.get(0)),number(v.get(1)));}
                 actor.using=f.get("using").getAsBoolean();actor.riding=f.get("riding").getAsBoolean();actor.slow=f.get("slow").getAsBoolean();actor.sneak=number(f.get("sneak"));actor.item(number(f.get("item")));
