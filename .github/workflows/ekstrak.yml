@@ -27,63 +27,91 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ZIP_FILE=$(find . -maxdepth 1 -type f -iname "*.zip" -print -quit)
 
-          if [ -z "$ZIP_FILE" ]; then
+          mapfile -d '' ZIP_FILES < <(
+            find . -maxdepth 1 -type f -iname "*.zip" -print0 | sort -z
+          )
+
+          if [ "${#ZIP_FILES[@]}" -eq 0 ]; then
             echo "ERROR: Tidak ada file ZIP."
             exit 1
           fi
 
-          echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
+          echo "Ditemukan ${#ZIP_FILES[@]} file ZIP:"
+          printf ' - %s\n' "${ZIP_FILES[@]}"
 
       - name: Extract ZIP
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf /tmp/extracted
-          mkdir -p /tmp/extracted
-          unzip -q "$ZIP_FILE" -d /tmp/extracted
 
-      - name: Find source root
-        shell: bash
-        run: |
-          set -euo pipefail
-          CURRENT="/tmp/extracted"
+          rm -rf /tmp/extracted /tmp/final
+          mkdir -p /tmp/extracted /tmp/final
 
-          while true; do
-            entries=()
-            while IFS= read -r -d '' item; do
-              entries+=("$item")
-            done < <(
-              find "$CURRENT" -mindepth 1 -maxdepth 1 \
-                ! -name ".github" -print0
-            )
+          mapfile -d '' ZIP_FILES < <(
+            find . -maxdepth 1 -type f -iname "*.zip" -print0 | sort -z
+          )
 
-            if [ "${#entries[@]}" -ne 1 ]; then
-              break
+          INDEX=0
+
+          for ZIP_FILE in "${ZIP_FILES[@]}"; do
+            INDEX=$((INDEX + 1))
+
+            echo "=================================="
+            echo "Extracting: $ZIP_FILE"
+            echo "=================================="
+
+            CURRENT_EXTRACT="/tmp/extracted/$INDEX"
+
+            mkdir -p "$CURRENT_EXTRACT"
+
+            unzip -q "$ZIP_FILE" -d "$CURRENT_EXTRACT"
+
+            CURRENT="$CURRENT_EXTRACT"
+
+            while true; do
+              entries=()
+
+              while IFS= read -r -d '' item; do
+                entries+=("$item")
+              done < <(
+                find "$CURRENT" -mindepth 1 -maxdepth 1 \
+                  ! -name ".github" -print0
+              )
+
+              if [ "${#entries[@]}" -ne 1 ]; then
+                break
+              fi
+
+              item="${entries[0]}"
+
+              if [ ! -d "$item" ]; then
+                break
+              fi
+
+              CURRENT="$item"
+            done
+
+            if [ -z "$(find "$CURRENT" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+              echo "ERROR: ZIP kosong: $ZIP_FILE"
+              exit 1
             fi
 
-            item="${entries[0]}"
-            if [ ! -d "$item" ]; then
-              break
-            fi
+            echo "Merging contents from: $ZIP_FILE"
 
-            CURRENT="$item"
+            rsync -av "$CURRENT/" /tmp/final/
+
           done
 
-          if [ -z "$(find "$CURRENT" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
-            echo "ERROR: ZIP kosong."
-            exit 1
-          fi
-
-          rm -rf /tmp/final
-          mkdir -p /tmp/final
-          cp -a "$CURRENT"/. /tmp/final/
+          echo "=================================="
+          echo "Semua ZIP berhasil diekstrak."
+          echo "=================================="
 
       - name: Merge extracted files
         shell: bash
         run: |
           set -euo pipefail
+
           rm -rf /tmp/final/.github
           rsync -av --exclude='/.github/' /tmp/final/ ./
 
@@ -91,7 +119,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -f "$ZIP_FILE"
+
+          find . -maxdepth 1 -type f -iname "*.zip" -delete
+
+          echo "Semua file ZIP sumber berhasil dihapus."
 
       - name: Commit and Push
         shell: bash
