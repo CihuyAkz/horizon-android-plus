@@ -1,11 +1,22 @@
-HORIZON ANDROID PLUS — CI RUN #38 FIX
+Horizon Android Plus — CI run #39 fix
 
-Apply this incremental fix on top of the source currently on branch `android` at commit `e61b56521f50bd6ac00d39fd5c35b0e0889c764f` (the source used by Actions run #38). Extract the ZIP into the repository root and overwrite the two files.
+Cause:
+The synced Nightly sources in crates/horizon-mods use the zip 9.x API
+(ZipFile::name() returns a Result<Cow<str>>). The Android Plus manifest
+still selected zip 2.x, where name() returns &str. This caused the
+map_err()/into_owned() compiler errors in content.rs, index.rs,
+index/native.rs and modpack.rs.
 
-This fix: (1) changes resolver::resolve to return the Nightly Resolved { host, port, addresses } structure expected by connection.rs; (2) adds the Nightly server_redirect re-export; and (3) registers mod_net, which exists in the tree and is imported by horizon-client. It preserves Android Plus's existing install_system_srv_lookup export and its DNS module visibility.
+Change:
+Update crates/horizon-mods/Cargo.toml from zip version "2" to "9.1.3",
+matching Horizon Nightly's manifest and the existing zip 9.x dependency
+used by horizon-server.
 
-Only these files are included:
-- crates/horizon-protocol/src/resolver.rs
-- crates/horizon-protocol/src/lib.rs
+Apply from the repository root:
+  git apply horizon-mods-zip9.patch
 
-Validation performed: ZIP CRC check, manifest SHA-256 check, Rust module/API consistency checks by source inspection. A full Rust/Android build was not run locally.
+Then run a Cargo check/build so Cargo refreshes Cargo.lock, and commit
+both crates/horizon-mods/Cargo.toml and Cargo.lock before running Actions.
+
+This patch only changes the dependency version. It does not include an APK
+or guarantee that no further compile errors will appear later in the build.
