@@ -1,9 +1,11 @@
-HORIZON ANDROID PLUS — COMPLETE CHANGES + CI FIX
+HORIZON ANDROID PLUS — CI RUN #38 FIX
 
-This archive contains the earlier Android Plus UI changes, the selective Horizon Nightly source updates, and the missing horizon-chat-filter crate required by the Android build workflow.
+Apply this incremental fix on top of the source currently on branch `android` at commit `e61b56521f50bd6ac00d39fd5c35b0e0889c764f` (the source used by Actions run #38). Extract the ZIP into the repository root and overwrite the two files.
 
-Apply: extract the archive contents into the root of the current horizon-android-plus source folder and overwrite files when prompted. The root Cargo.toml is included and registers crates/horizon-chat-filter as a workspace member.
+This fix: (1) changes resolver::resolve to return the Nightly Resolved { host, port, addresses } structure expected by connection.rs; (2) adds the Nightly server_redirect re-export; and (3) registers mod_net, which exists in the tree and is imported by horizon-client. It preserves Android Plus's existing install_system_srv_lookup export and its DNS module visibility.
 
-The manifest.json lists updated, added, and deleted paths. Deleted paths are listed for review and are not automatically deleted by extracting this ZIP.
+Only these files are included:
+- crates/horizon-protocol/src/resolver.rs
+- crates/horizon-protocol/src/lib.rs
 
-Validation performed: ZIP integrity, manifest hashes, TOML parsing, workspace membership, and all 118 Cargo path-dependency references in the staged tree. No missing path dependencies were found. A full Cargo/Android build was not run in this environment.
+Validation performed: ZIP CRC check, manifest SHA-256 check, Rust module/API consistency checks by source inspection. A full Rust/Android build was not run locally.
