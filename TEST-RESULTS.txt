@@ -1,8 +1,0 @@
-Python converter tests: 3 passed
-Input pair verification:
-- Original: ComplementaryReimagined_r5.9.3.zip
-- Working Horizon reference: ComplementaryHorizon.zip
-- Converter output vs reference: 436/436 files had identical paths and bytes
-- ZIP entry count: 469 in generated output and reference
-- Shader source changes: exactly one verified line in shaders/lib/common.glsl
-Android/Rust compile: not run in this environment
