@@ -1,0 +1,111 @@
+diff -ruN a/Cargo.lock b/Cargo.lock
+--- a/Cargo.lock	2026-11-03 15:02:13.601973168 +0000
++++ b/Cargo.lock	2026-11-03 15:02:13.669134478 +0000
+@@ -1604,6 +1604,7 @@
+  "serde_json",
+  "sha1",
+  "sha2",
++ "smallvec",
+  "symphonia",
+  "unicode-bidi",
+  "ureq",
+diff -ruN a/crates/horizon-client-render/Cargo.toml b/crates/horizon-client-render/Cargo.toml
+--- a/crates/horizon-client-render/Cargo.toml	2026-11-03 15:02:13.595092887 +0000
++++ b/crates/horizon-client-render/Cargo.toml	2026-11-03 15:02:13.668848733 +0000
+@@ -39,6 +39,7 @@
+ serde_json = { version = "1.0.151", features = ["raw_value"] }
+ sha1 = "0.10"
+ sha2 = "0.10.9"
++smallvec = "1"
+ symphonia = { version = "0.5", default-features = false, features = ["ogg", "vorbis"] }
+ unicode-bidi = "0.3.18"
+ ureq = { version = "2", default-features = false, features = ["tls"] }
+diff -ruN a/crates/horizon-client-render/src/gfx/resident.rs b/crates/horizon-client-render/src/gfx/resident.rs
+--- a/crates/horizon-client-render/src/gfx/resident.rs	2026-11-03 15:02:13.581162242 +0000
++++ b/crates/horizon-client-render/src/gfx/resident.rs	2026-11-03 15:02:13.668603796 +0000
+@@ -4,7 +4,7 @@
+ //! sections that remain are reached by index rather than by hashing keys.
+ #[cfg(test)]
+ use super::Frustum;
+-use super::{Cull, SectionKey};
++use super::{SectionKey, cull::Cull};
+ use crate::{fast_hash::FxHashMap, streaming::in_view_distance};
+ use glam::{DVec3, Vec3};
+ 
+diff -ruN a/crates/horizon-client-render/src/gfx.rs b/crates/horizon-client-render/src/gfx.rs
+--- a/crates/horizon-client-render/src/gfx.rs	2026-11-03 15:02:13.565961302 +0000
++++ b/crates/horizon-client-render/src/gfx.rs	2026-11-03 15:02:13.667640460 +0000
+@@ -86,6 +86,7 @@
+ 
+ mod animate;
+ mod arena;
++mod block_light;
+ pub mod compositor;
+ mod cull;
+ mod end_sky;
+@@ -101,6 +102,7 @@
+ mod native_material;
+ mod native_pack;
+ mod native_post;
++mod native_shadow;
+ mod native_sky;
+ mod occlusion;
+ mod oit;
+@@ -112,7 +114,7 @@
+ mod pack_post;
+ mod pack_shadow;
+ mod pack_sky;
+-mod pack_timing;
++pub mod pack_timing;
+ pub mod pack_uniforms;
+ mod pack_weather;
+ mod page_runs;
+diff -ruN a/crates/horizon-client-render/src/graphics.rs b/crates/horizon-client-render/src/graphics.rs
+--- a/crates/horizon-client-render/src/graphics.rs	2026-11-03 15:02:13.588109860 +0000
++++ b/crates/horizon-client-render/src/graphics.rs	2026-11-03 15:02:13.668707442 +0000
+@@ -214,6 +214,26 @@
+     Graph,
+ }
+ 
++/// Leaf culling: how the mesher thins out leaf faces (see `mesher/leaf_culling.rs`).
++#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
++pub enum LeafCullingMode {
++    /// Every leaf face is drawn as vanilla does.
++    #[default]
++    Off,
++    /// Fully enclosed leaves are solidified into the opaque layer.
++    Solid,
++    /// Also solidifies leaves with a single open face, thinning the canopy shell.
++    SolidAggressive,
++    /// Drops faces shared between two leaves inside the section.
++    Hollow,
++}
++impl LeafCullingMode {
++    /// Whether the mode needs the section's leaf mask (`Solid`, `SolidAggressive`).
++    pub fn is_interior(self) -> bool {
++        matches!(self, LeafCullingMode::Solid | LeafCullingMode::SolidAggressive)
++    }
++}
++
+ /// How finely far terrain is drawn (`FarDetail` in the LOD options).
+ #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+ pub enum FarDetail {
+diff -ruN a/crates/horizon-client-render/src/lib.rs b/crates/horizon-client-render/src/lib.rs
+--- a/crates/horizon-client-render/src/lib.rs	2026-11-03 15:02:13.574026806 +0000
++++ b/crates/horizon-client-render/src/lib.rs	2026-11-03 15:02:13.668488314 +0000
+@@ -23,6 +23,7 @@
+ pub mod clouds;
+ pub mod collisions;
+ pub mod command_block;
++pub mod connected;
+ pub mod containers;
+ pub mod crash;
+ pub mod datapack;
+@@ -57,6 +58,7 @@
+ pub mod model_library;
+ pub mod models;
+ pub mod multiline_edit;
++pub mod native_emissive;
+ pub mod options_file;
+ pub mod options_fixes;
+ pub mod options_ui;
