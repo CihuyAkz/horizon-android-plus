@@ -1,0 +1,34 @@
+Horizon Android native launcher UI update
+
+Scope: native launcher shell, sidebar, topbar, responsive layout, theme palette, assets, and home play screen. Demo mode was not edited.
+The source has not been compiled in this environment because cargo/rustc are unavailable.
+A successful Android APK build and same-device screenshot comparison are still required before claiming pixel parity.
+
+Changed files:
+- crates/horizon-client/assets/horizon-launcher-logo.png
+- crates/horizon-client/assets/horizon-launcher-play-button.png
+- crates/horizon-client/assets/horizon-launcher-home-glow.png
+- crates/horizon-client/src/no_resources.rs
+- crates/horizon-client/src/ui_theme.rs
+- crates/horizon-client/src/osk.rs
+- crates/horizon-client/src/android/launcher_pages.rs
+- crates/horizon-client/src/android/launcher_gesture.rs
+- crates/horizon-client/src/android/chooser.rs
+- crates/horizon-client/src/android/launcher.rs
+- crates/horizon-client/src/android/documents.rs
+- crates/horizon-client/src/android/login.rs
+- crates/horizon-client/assets/horizon-icons/download.png
+- crates/horizon-client/assets/horizon-icons/box.png
+- crates/horizon-client/assets/horizon-icons/package.png
+- crates/horizon-client/assets/horizon-icons/home.png
+- crates/horizon-client/assets/horizon-icons/library.png
+- crates/horizon-client/assets/horizon-icons/wand.png
+- crates/horizon-client/assets/horizon-icons/layers.png
+- crates/horizon-client/assets/horizon-icons/user.png
+- crates/horizon-client/assets/horizon-icons/play.png
+- crates/horizon-client/assets/horizon-icons/moon.png
+- crates/horizon-client/assets/horizon-icons/bell.png
+- crates/horizon-client/assets/horizon-icons/more.png
+- crates/horizon-client/assets/horizon-icons/search.png
+- crates/horizon-client/assets/horizon-icons/settings.png
+- crates/horizon-client/assets/horizon-icons/sun.png

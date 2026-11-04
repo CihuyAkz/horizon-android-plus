@@ -1,0 +1,39 @@
+diff --git a/tools/check_android_release.py b/tools/check_android_release.py
+--- a/tools/check_android_release.py
++++ b/tools/check_android_release.py
+@@ -13,7 +13,9 @@
+ import subprocess
+ import zipfile
+
+ ASSETS = {'assets/engine-data.zip', 'assets/bedrock-controls.zip'}
++# The trusted Android WebView launcher is application UI, not game data.
++APP_ASSETS = {'assets/Horizon-Android-Plus.html'}
+ # AndroidX build-time optimization profiles, not player/account profiles.
+ BUILD_ASSETS = {'assets/dexopt/baseline.prof', 'assets/dexopt/baseline.profm'}
+ LICENSE_ASSETS = {'assets/LICENSE.txt', 'assets/THIRD_PARTY_NOTICES.md'}
+@@ -54,7 +56,7 @@ def inspect_payload(path, public=False):
+             if any(part.lower() in PRIVATE_PARTS for part in parts) or PurePosixPath(name).suffix.lower() in PRIVATE_SUFFIXES:
+                 findings.append({'path': full, 'kind': 'private_file'})
+-            if depth == 0 and name.startswith('assets/') and name not in ASSETS | BUILD_ASSETS | LICENSE_ASSETS:
++            if depth == 0 and name.startswith('assets/') and name not in ASSETS | APP_ASSETS | BUILD_ASSETS | LICENSE_ASSETS:
+                 findings.append({'path': full, 'kind': 'unexpected_asset'})
+             data = archive.read(entry)
+             for kind, pattern in PATTERNS.items():
+                 if pattern.search(data):
+diff --git a/tests/test_android_release_audit.py b/tests/test_android_release_audit.py
+--- a/tests/test_android_release_audit.py
++++ b/tests/test_android_release_audit.py
+@@ -27,7 +27,11 @@ class ReleaseAuditTests(unittest.TestCase):
+         self.assertTrue(build.generated_engine_file('worldgen/blocks/structure-blocks.json'))
+         self.assertFalse(build.generated_engine_file('worldgen/structure/minecraft/village/test.nbt'))
+         with tempfile.TemporaryDirectory() as folder, patch.dict(sys.modules, {'android_build': build}):
+             path = Path(folder) / 'public.apk'
+-            files = {'AndroidManifest.xml': b'test', 'assets/engine-data.zip': archive({'facts.json': b'{}'})}
++            files = {
++                'AndroidManifest.xml': b'test',
++                'assets/engine-data.zip': archive({'facts.json': b'{}'}),
++                'assets/Horizon-Android-Plus.html': b'<!doctype html><title>Horizon Android</title>',
++            }
+             path.write_bytes(archive(files))
+             self.assertEqual(audit.inspect_payload(path, public=True)['findings'], [])
+             for name in ['worldgen/structure/minecraft/test.nbt', 'worldgen/biomes.json', 'raw.jar', 'unknown.json']:
