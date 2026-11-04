@@ -1,0 +1,63 @@
+
+name: Copy Release Tag Source
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to copy (e.g. v1.0.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  copy-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ref: android
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch Release Tag
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          git fetch origin "refs/tags/$TAG:refs/tags/$TAG"
+
+      - name: Copy Release Source
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          mkdir -p /tmp/release-source
+          git archive "$TAG" | tar -x -C /tmp/release-source
+
+          rsync -a --delete \
+            --exclude='.github/' \
+            /tmp/release-source/ ./
+
+      - name: Commit Changes
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No changes detected."
+            exit 0
+          fi
+
+          git commit -m "Copy source from release tag: $TAG"
+
+      - name: Push Changes
+        run: |
+          git push origin android
