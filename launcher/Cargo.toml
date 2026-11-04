@@ -10,6 +10,7 @@ description = "Downloads, prepares and starts Horizon builds"
 [dependencies]
 gpui = "0.2.2"
 ureq = { version = "2", features = ["json", "tls"], default-features = false }
+url = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Checks the client jar and the version file found in other launchers' folders (sources.rs).

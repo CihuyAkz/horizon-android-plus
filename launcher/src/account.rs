@@ -11,7 +11,12 @@
 //!
 //! The Azure app (client ID) is Horizon's own and is configuration: `HORIZON_MSA_CLIENT_ID` at
 //! build time, or at run time to override it. Without one, sign-in says it is not configured.
-use serde_json::{Value, json};
+#[path = "account/ely.rs"]
+pub mod ely;
+#[path = "account/session.rs"]
+pub mod session;
+
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -21,7 +26,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub const SERVICE: &str = "dev.playhorizon.launcher";
 const SCOPE: &str = "XboxLive.signin offline_access";
 #[cfg(target_os = "android")]
-pub const NOT_CONFIGURED: &str = "Microsoft sign-in is coming soon. Until then the game plays offline: single player, \
+pub const NOT_CONFIGURED: &str =
+    "Microsoft sign-in is coming soon. Until then the game plays offline: single player, \
      LAN and servers in offline mode work.";
 #[cfg(not(target_os = "android"))]
 pub const NOT_CONFIGURED: &str = "This build of the launcher has no Microsoft sign-in (HORIZON_MSA_CLIENT_ID), so it can't start the game.";
@@ -82,7 +88,7 @@ impl Endpoints {
 
 /// A request to `url`: the launcher's user agent, a 20 s timeout, and the player's proxy when one
 /// is set (`proxy`), since a sign-in has to get out the way downloads do.
-fn request_to(method: &str, url: &str) -> ureq::Request {
+pub(crate) fn request_to(method: &str, url: &str) -> ureq::Request {
     crate::proxy::agent(
         ureq::AgentBuilder::new()
             .timeout(Duration::from_secs(20))
@@ -209,7 +215,7 @@ fn microsoft_scope(client_id: &str) -> &'static str {
 // ----- The device-code flow ----------------------------------------------------------------------
 
 /// What the player types at the verification page.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct DeviceCode {
     pub user_code: String,
     pub verification_uri: String,
@@ -444,7 +450,13 @@ struct Minecraft {
     xuid: Option<String>,
 }
 
-fn minecraft_login(ep: &Endpoints, ms_access: &str, legacy: bool) -> Result<Minecraft, String> {
+fn minecraft_login(
+    ep: &Endpoints,
+    ms_access: &str,
+    legacy: bool,
+    progress: &dyn Fn(session::Phase),
+) -> Result<Minecraft, String> {
+    progress(session::Phase::Xbox);
     let (status, xbl) = send(
         request_to("POST", &ep.xbox_user),
         Some(Body::Json(json!({
@@ -481,6 +493,7 @@ fn minecraft_login(ep: &Endpoints, ms_access: &str, legacy: bool) -> Result<Mine
         return Err("Xbox Live refused the sign-in.".into());
     };
     let xuid = claims.and_then(|c| str_field(c, "xid"));
+    progress(session::Phase::Minecraft);
     let (token, expires_in) = minecraft_token(ep, &format!("XBL3.0 x={uhs};{xsts_token}"))?;
     Ok(Minecraft {
         token,
@@ -562,6 +575,8 @@ fn owns_game(ep: &Endpoints, token: &str) -> Result<bool, String> {
 /// A Minecraft profile, as the launcher shows and remembers it (no secrets).
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Account {
+    #[serde(default)]
+    pub provider: Provider,
     /// The profile UUID without dashes.
     pub uuid: String,
     pub name: String,
@@ -570,6 +585,23 @@ pub struct Account {
     pub skin: Option<(String, String)>,
     #[serde(default)]
     pub cape: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Provider {
+    #[default]
+    Microsoft,
+    Ely,
+}
+impl Account {
+    /// Provider-qualified identity; legacy Microsoft keychain keys stay unchanged.
+    pub fn key(&self) -> String {
+        match self.provider {
+            Provider::Microsoft => self.uuid.clone(),
+            Provider::Ely => format!("ely-{}", self.uuid),
+        }
+    }
 }
 
 /// The profile; none when the account has none (it doesn't own the game, or never made one).
@@ -598,6 +630,7 @@ fn profile(ep: &Endpoints, token: &str) -> Result<Option<Account>, String> {
             .cloned()
     };
     Ok(Some(Account {
+        provider: Default::default(),
         uuid: uuid.replace('-', "").to_lowercase(),
         name,
         skin: active("skins").and_then(|s| {
@@ -615,7 +648,11 @@ fn profile(ep: &Endpoints, token: &str) -> Result<Option<Account>, String> {
 /// What the keychain keeps for one account.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Secrets {
+    #[serde(default)]
+    provider: Provider,
     refresh_token: String,
+    #[serde(default)]
+    sign_in_required: bool,
     minecraft_token: String,
     minecraft_expires_at: u64,
     #[serde(default)]
@@ -637,18 +674,36 @@ impl std::fmt::Debug for Secrets {
 
 /// From Microsoft tokens to a ready account: Xbox, XSTS, Minecraft, ownership, profile.
 pub fn finish_sign_in(ep: &Endpoints, ms: MsTokens) -> Result<(Account, Secrets), String> {
-    let mc = minecraft_login(ep, &ms.access, ms.legacy)?;
+    finish_sign_in_with_progress(ep, ms, &|_| {})
+}
+
+pub fn finish_sign_in_with_progress(
+    ep: &Endpoints,
+    ms: MsTokens,
+    progress: &dyn Fn(session::Phase),
+) -> Result<(Account, Secrets), String> {
+    let mc = minecraft_login(ep, &ms.access, ms.legacy, progress)?;
+    progress(session::Phase::Ownership);
     if !owns_game(ep, &mc.token)? {
         return Err(DOES_NOT_OWN.into());
     }
+    progress(session::Phase::Profile);
     let account = profile(ep, &mc.token)?.ok_or(NO_PROFILE)?;
     Ok((account, Secrets::new(ms.refresh, mc)))
 }
 
 impl Secrets {
+    pub(crate) fn provider(&self) -> Provider {
+        self.provider
+    }
+    pub(crate) fn game_token(&self) -> &str {
+        &self.minecraft_token
+    }
     fn new(refresh_token: String, mc: Minecraft) -> Self {
         Self {
+            provider: Provider::Microsoft,
             refresh_token,
+            sign_in_required: false,
             minecraft_token: mc.token,
             minecraft_expires_at: mc.expires_at,
             xuid: mc.xuid,
@@ -670,30 +725,83 @@ enum Check {
 /// Asks whether `account` owns the game, with a Minecraft token renewed through the refresh token
 /// first when it has less than an hour left. The secrets come back renewed whatever the answer.
 fn check(ep: &Endpoints, client_id: Option<&str>, account: &Account, secrets: Secrets) -> Check {
-    let mut secrets = secrets;
-    if secrets.minecraft_expires_at <= now() + RENEW_BEFORE {
+    check_with(ep, client_id, account, secrets, false, &|_| {})
+}
+
+fn check_with(
+    ep: &Endpoints,
+    client_id: Option<&str>,
+    account: &Account,
+    mut secrets: Secrets,
+    force: bool,
+    progress: &dyn Fn(session::Phase),
+) -> Check {
+    if account.provider != secrets.provider {
+        return Check::NoAnswer(
+            "The saved account provider does not match this session. Sign in again.".into(),
+            secrets,
+        );
+    }
+    if secrets.sign_in_required {
+        return Check::NoAnswer(SIGN_IN_AGAIN.into(), secrets);
+    }
+    if account.provider == Provider::Ely {
+        return match ely::refresh(account, &secrets) {
+            Ok((account, secrets)) => Check::Owns(account, secrets),
+            Err(error) => {
+                secrets.sign_in_required = error == ely::REFUSED;
+                Check::NoAnswer(error, secrets)
+            }
+        };
+    }
+    if secrets.sign_in_required {
+        return Check::NoAnswer(SIGN_IN_AGAIN.into(), secrets);
+    }
+    if force || secrets.minecraft_expires_at <= now() + RENEW_BEFORE {
+        progress(session::Phase::Microsoft);
         let renewed = client_id
             .ok_or_else(|| NOT_CONFIGURED.to_string())
-            .and_then(|id| refresh_ms(ep, id, &secrets.refresh_token))
-            .and_then(|ms| Ok((minecraft_login(ep, &ms.access, ms.legacy)?, ms.refresh)));
-        match renewed {
-            Ok((mc, refresh)) => {
+            .and_then(|id| refresh_ms(ep, id, &secrets.refresh_token));
+        let ms = match renewed {
+            Ok(ms) => ms,
+            Err(e) => {
+                secrets.sign_in_required = e == SIGN_IN_AGAIN;
+                return Check::NoAnswer(e, secrets);
+            }
+        };
+        // Microsoft can rotate its refresh credential even if a later service fails.
+        secrets.refresh_token = ms.refresh;
+        match minecraft_login(ep, &ms.access, ms.legacy, progress) {
+            Ok(mc) => {
                 secrets = Secrets {
                     owns: secrets.owns,
-                    ..Secrets::new(refresh, mc)
+                    ..Secrets::new(secrets.refresh_token, mc)
                 }
             }
             Err(e) => return Check::NoAnswer(e, secrets),
         }
     }
     let token = &secrets.minecraft_token;
-    match owns_game(ep, token).and_then(|owns| Ok(if owns { profile(ep, token)? } else { None })) {
+    progress(session::Phase::Ownership);
+    match owns_game(ep, token).and_then(|owns| {
+        if !owns {
+            return Ok(None);
+        }
+        progress(session::Phase::Profile);
+        profile(ep, token)
+    }) {
         Err(e) => Check::NoAnswer(e, secrets),
         Ok(None) => Check::DoesNot(Secrets {
             owns: false,
             ..secrets
         }),
-        Ok(Some(p)) if p.uuid != account.uuid => Check::NoAnswer(OTHER_PROFILE.into(), secrets),
+        Ok(Some(p)) if p.uuid != account.uuid => Check::NoAnswer(
+            OTHER_PROFILE.into(),
+            Secrets {
+                sign_in_required: true,
+                ..secrets
+            },
+        ),
         Ok(Some(p)) => Check::Owns(
             p,
             Secrets {
@@ -713,6 +821,12 @@ pub fn fresh(
     account: &Account,
     secrets: Secrets,
 ) -> Result<(Account, Secrets), String> {
+    if account.provider != secrets.provider {
+        return Err("Account and session providers do not match.".into());
+    }
+    if secrets.sign_in_required {
+        return Err(SIGN_IN_AGAIN.into());
+    }
     if secrets.minecraft_expires_at > now() + RENEW_BEFORE {
         return Ok((account.clone(), secrets));
     }
@@ -732,10 +846,20 @@ pub trait SecretStore: Send + Sync {
     fn delete(&self, key: &str) -> Result<(), String>;
     /// False for memory: secrets are gone when the launcher closes.
     fn persistent(&self) -> bool;
+    /// A shared lock for read/renew/write operations; memory stores need only the process lock.
+    fn lock_file(&self) -> Option<PathBuf> {
+        None
+    }
+    /// The in-process half of that lock. The system keychain is one per computer, so every
+    /// handle to it shares the process-wide lock; a memory store's secrets are its own, and so
+    /// is its lock: two of them (one per unit test) never wait for each other.
+    fn operations(&self) -> &Mutex<()> {
+        session::process_lock()
+    }
 }
 
 #[derive(Default)]
-pub struct MemoryStore(Mutex<HashMap<String, String>>);
+pub struct MemoryStore(Mutex<HashMap<String, String>>, Mutex<()>);
 impl SecretStore for MemoryStore {
     fn get(&self, key: &str) -> Result<Option<String>, String> {
         Ok(self.0.lock().unwrap().get(key).cloned())
@@ -750,6 +874,9 @@ impl SecretStore for MemoryStore {
     }
     fn persistent(&self) -> bool {
         false
+    }
+    fn operations(&self) -> &Mutex<()> {
+        &self.1
     }
 }
 
@@ -826,16 +953,22 @@ impl SecretStore for SystemStore {
     fn persistent(&self) -> bool {
         true
     }
+    fn lock_file(&self) -> Option<PathBuf> {
+        Some(crate::backend::data_dir().join("account-session.lock"))
+    }
 }
 
 /// Keychain on macOS, Credential Manager on Windows (the keyring crate). Credential Manager takes at
-/// most 2560 bytes of UTF-16 per item and a sign-in's secrets are longer, so a secret is kept in
-/// pieces: the first under the account's key, the rest under `key.1`, `key.2`...
+/// most 2560 bytes of UTF-16 per item and a sign-in's secrets are longer, so on Windows a secret is
+/// kept in pieces: the first under the account's key, the rest under `key.1`, `key.2`... The
+/// Keychain has no such limit, and every item is a consent prompt for a launcher signature it
+/// doesn't know yet — pieces meant several prompts after every self-update (#4912) — so on macOS a
+/// secret is one item, and pieces an older launcher left fold into it as they are read.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub struct SystemStore;
 
 /// Bytes of UTF-8 per keychain item: at most twice as many in UTF-16, well under 2560.
-#[cfg(any(target_os = "macos", target_os = "windows", test))]
+#[cfg(any(target_os = "windows", test))]
 const PIECE: usize = 1000;
 
 #[cfg(any(target_os = "macos", target_os = "windows", test))]
@@ -848,7 +981,7 @@ fn piece_key(key: &str, n: usize) -> String {
 }
 
 /// `secret` cut into pieces of at most `PIECE` bytes, on character boundaries.
-#[cfg(any(target_os = "macos", target_os = "windows", test))]
+#[cfg(any(target_os = "windows", test))]
 fn split_secret(mut secret: &str) -> Vec<&str> {
     let mut pieces = Vec::new();
     while secret.len() > PIECE {
@@ -873,7 +1006,7 @@ trait Items {
     fn remove(&self, key: &str) -> Result<bool, String>;
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows", test))]
+#[cfg(any(target_os = "windows", test))]
 fn get_pieces(items: &dyn Items, key: &str) -> Result<Option<String>, String> {
     let Some(mut secret) = items.read(key)? else {
         return Ok(None);
@@ -887,7 +1020,7 @@ fn get_pieces(items: &dyn Items, key: &str) -> Result<Option<String>, String> {
     Ok(Some(secret))
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows", test))]
+#[cfg(any(target_os = "windows", test))]
 fn set_pieces(items: &dyn Items, key: &str, secret: &str) -> Result<(), String> {
     let before = get_pieces(items, key).ok().flatten();
     let pieces = split_secret(secret);
@@ -908,8 +1041,20 @@ fn set_pieces(items: &dyn Items, key: &str, secret: &str) -> Result<(), String> 
     }
     // Pieces left over from a longer secret would be read back as part of this one.
     for n in pieces.len().. {
-        if !items.remove(&piece_key(key, n))? {
-            break;
+        match items.remove(&piece_key(key, n)) {
+            Ok(true) => {}
+            Ok(false) => break,
+            Err(e) => {
+                // Some leftovers are already gone, some are still there: the old secret goes back
+                // whole, as on a refused write above.
+                let _ = delete_pieces(items, key);
+                if let Some(before) = &before {
+                    for (n, piece) in split_secret(before).iter().enumerate() {
+                        let _ = items.write(&piece_key(key, n), piece);
+                    }
+                }
+                return Err(e);
+            }
         }
     }
     Ok(())
@@ -920,6 +1065,66 @@ fn delete_pieces(items: &dyn Items, key: &str) -> Result<(), String> {
     for n in 0.. {
         if !items.remove(&piece_key(key, n))? {
             break;
+        }
+    }
+    Ok(())
+}
+
+/// One item per key, the whole secret in it (macOS). A secret an older launcher split over `key.1`,
+/// `key.2`, ... reads whole and folds into the one item, so a read touches a single item — and asks
+/// once — from then on. A merged item also reads fine as "piece 0" to launchers that still split.
+#[cfg(any(target_os = "macos", test))]
+fn get_item(items: &dyn Items, key: &str) -> Result<Option<String>, String> {
+    let Some(mut secret) = items.read(key)? else {
+        return Ok(None);
+    };
+    let mut split = false;
+    for n in 1.. {
+        match items.read(&piece_key(key, n))? {
+            Some(piece) => {
+                secret.push_str(&piece);
+                split = true;
+            }
+            None => break,
+        }
+    }
+    if split {
+        let _ = set_item(items, key, &secret);
+    }
+    Ok(Some(secret))
+}
+
+/// Writes `secret` to `key` and removes `key.1`, `key.2`, ... pieces an older, split secret left:
+/// they would read back as part of this one. A removal the keychain refuses puts the old items
+/// back: the merged secret beside the pieces left would read as a longer, unparseable one, and
+/// pieces removed before the failure can't be had again except from here.
+#[cfg(any(target_os = "macos", test))]
+fn set_item(items: &dyn Items, key: &str, secret: &str) -> Result<(), String> {
+    let mut before = Vec::new();
+    if let Some(piece) = items.read(key)? {
+        before.push((key.to_string(), piece));
+        for n in 1.. {
+            match items.read(&piece_key(key, n))? {
+                Some(piece) => before.push((piece_key(key, n), piece)),
+                None => break,
+            }
+        }
+    }
+    items.write(key, secret)?;
+    for n in 1.. {
+        match items.remove(&piece_key(key, n)) {
+            Ok(true) => {}
+            Ok(false) => break,
+            Err(e) => {
+                if before.is_empty() {
+                    let _ = items.remove(key);
+                } else {
+                    for (key, piece) in &before {
+                        let _ = items.write(key, piece);
+                    }
+                }
+                return Err(e);
+            }
         }
     }
     Ok(())
@@ -943,9 +1148,28 @@ fn credential_manager_says(code: u32) -> Option<&'static str> {
     (code == ERROR_NOT_ENOUGH_MEMORY).then_some(CREDENTIAL_MANAGER_FULL)
 }
 
+/// A running executable removed by an older macOS updater cannot create Keychain credentials.
+#[cfg(any(target_os = "macos", test))]
+pub const MACOS_LAUNCHER_RESTART: &str = "The launcher was updated while it was running. Restart the launcher, then sign in with Microsoft again.";
+
+#[cfg(any(target_os = "macos", test))]
+fn macos_keychain_says(code: i32) -> Option<&'static str> {
+    // CSSM's Unix ENOENT: Keychain cannot identify an executable removed by an older updater.
+    (code == 100002).then_some(MACOS_LAUNCHER_RESTART)
+}
+
 /// The keyring crate's error as the player reads it.
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn write_error(e: keyring::Error) -> String {
+    #[cfg(target_os = "macos")]
+    if let keyring::Error::PlatformFailure(inner) = &e {
+        if let Some(said) = inner
+            .downcast_ref::<security_framework::base::Error>()
+            .and_then(|error| macos_keychain_says(error.code()))
+        {
+            return said.to_string();
+        }
+    }
     #[cfg(target_os = "windows")]
     if let keyring::Error::PlatformFailure(inner) = &e {
         if let Some(said) = inner
@@ -987,9 +1211,19 @@ impl Items for KeyringItems {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 impl SecretStore for SystemStore {
+    #[cfg(target_os = "macos")]
+    fn get(&self, key: &str) -> Result<Option<String>, String> {
+        get_item(&KeyringItems, key)
+    }
+    #[cfg(target_os = "windows")]
     fn get(&self, key: &str) -> Result<Option<String>, String> {
         get_pieces(&KeyringItems, key)
     }
+    #[cfg(target_os = "macos")]
+    fn set(&self, key: &str, secret: &str) -> Result<(), String> {
+        set_item(&KeyringItems, key, secret)
+    }
+    #[cfg(target_os = "windows")]
     fn set(&self, key: &str, secret: &str) -> Result<(), String> {
         set_pieces(&KeyringItems, key, secret)
     }
@@ -998,6 +1232,9 @@ impl SecretStore for SystemStore {
     }
     fn persistent(&self) -> bool {
         true
+    }
+    fn lock_file(&self) -> Option<PathBuf> {
+        Some(crate::backend::data_dir().join("account-session.lock"))
     }
 }
 
@@ -1104,17 +1341,22 @@ pub fn valid_offline_name(name: &str) -> bool {
 }
 
 impl Accounts {
-    fn path() -> PathBuf {
+    pub(crate) fn path() -> PathBuf {
         crate::backend::data_dir().join("accounts.json")
     }
     pub fn load() -> Self {
-        std::fs::read_to_string(Self::path())
+        Self::load_from(&Self::path())
+    }
+    pub fn save(&self) -> Result<(), String> {
+        self.save_to(&Self::path())
+    }
+    pub(crate) fn load_from(path: &Path) -> Self {
+        std::fs::read_to_string(path)
             .ok()
             .and_then(|t| serde_json::from_str(&t).ok())
             .unwrap_or_default()
     }
-    pub fn save(&self) -> Result<(), String> {
-        let path = Self::path();
+    pub(crate) fn save_to(&self, path: &Path) -> Result<(), String> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
@@ -1123,14 +1365,16 @@ impl Accounts {
     }
     pub fn selected(&self) -> Option<&Account> {
         let uuid = self.selected.as_ref()?;
-        self.accounts.iter().find(|a| &a.uuid == uuid)
+        self.accounts.iter().find(|a| &a.key() == uuid)
     }
     /// Find an account by name (any case) or UUID (with or without dashes).
     pub fn find(&self, who: &str) -> Option<&Account> {
         let undashed = who.replace('-', "").to_lowercase();
-        self.accounts
-            .iter()
-            .find(|a| a.name.eq_ignore_ascii_case(who) || a.uuid == undashed)
+        self.accounts.iter().find(|a| a.key() == who).or_else(|| {
+            self.accounts
+                .iter()
+                .find(|a| a.name.eq_ignore_ascii_case(who) || a.uuid == undashed)
+        })
     }
     /// Keep a new or renewed account, its secrets in the store, and select it.
     pub fn add(
@@ -1139,12 +1383,25 @@ impl Accounts {
         account: Account,
         secrets: &Secrets,
     ) -> Result<(), String> {
+        let _operation = session::lock(store)?;
+        self.keep_sign_in(store, account, secrets)
+    }
+
+    fn keep_sign_in(
+        &mut self,
+        store: &dyn SecretStore,
+        account: Account,
+        secrets: &Secrets,
+    ) -> Result<(), String> {
+        if account.provider != secrets.provider {
+            return Err("Account and session providers do not match.".into());
+        }
         store.set(
-            &account.uuid,
+            &account.key(),
             &serde_json::to_string(secrets).map_err(|e| e.to_string())?,
         )?;
-        self.selected = Some(account.uuid.clone());
-        match self.accounts.iter_mut().find(|a| a.uuid == account.uuid) {
+        self.selected = Some(account.key());
+        match self.accounts.iter_mut().find(|a| a.key() == account.key()) {
             Some(a) => *a = account,
             None => self.accounts.push(account),
         }
@@ -1153,15 +1410,22 @@ impl Accounts {
     /// Whether an account here owned the game at its last check (the keychain's answer, no
     /// request): what Play and offline names need.
     pub fn has_owner(&self, store: &dyn SecretStore) -> bool {
-        self.accounts
-            .iter()
-            .any(|a| secrets_in(store, &a.uuid).is_some_and(|s| s.owns))
+        // The selected account first: it owning the game ends the search after one account's
+        // item — every account's item read can ask for the keychain (macOS, #4912).
+        self.selected()
+            .into_iter()
+            .chain(self.accounts.iter().filter(|a| Some(*a) != self.selected()))
+            .any(|a| {
+                a.provider == Provider::Microsoft
+                    && secrets_in(store, &a.key())
+                        .is_some_and(|s| s.owns && s.provider == Provider::Microsoft)
+            })
     }
 
     /// Who plays now.
     pub fn player(&self) -> Player {
         match (self.selected(), &self.offline_selected) {
-            (Some(a), _) => Player::Microsoft(a.uuid.clone()),
+            (Some(a), _) => Player::Microsoft(a.key()),
             (None, Some(name)) => Player::Offline(name.clone()),
             (None, None) => Player::GameName,
         }
@@ -1184,7 +1448,7 @@ impl Accounts {
     ) -> Result<(), String> {
         match who {
             Player::Microsoft(uuid) => {
-                if !self.accounts.iter().any(|a| a.uuid == uuid) {
+                if !self.accounts.iter().any(|a| a.key() == uuid) {
                     return Err("That account isn't signed in.".into());
                 }
                 self.selected = Some(uuid);
@@ -1266,7 +1530,7 @@ impl Accounts {
 
     /// A renewed profile (its name or skin changed) in place of the old one; who plays stays.
     fn update(&mut self, account: Account) {
-        if let Some(a) = self.accounts.iter_mut().find(|a| a.uuid == account.uuid) {
+        if let Some(a) = self.accounts.iter_mut().find(|a| a.key() == account.key()) {
             *a = account;
         }
     }
@@ -1274,8 +1538,17 @@ impl Accounts {
     /// Sign out: the secrets leave the keychain, the account the list. Offline names stay, but
     /// play only once an account that owns the game is back.
     pub fn remove(&mut self, store: &dyn SecretStore, uuid: &str) -> Result<(), String> {
+        let _operation = session::lock(store)?;
+        self.forget_sign_in(store, uuid)
+    }
+    /// Native UI actions must not wait on a background network renewal.
+    pub fn remove_when_idle(&mut self, store: &dyn SecretStore, uuid: &str) -> Result<(), String> {
+        let _operation = session::lock_within(store, Some(Duration::ZERO))?;
+        self.forget_sign_in(store, uuid)
+    }
+    fn forget_sign_in(&mut self, store: &dyn SecretStore, uuid: &str) -> Result<(), String> {
         store.delete(uuid)?;
-        self.accounts.retain(|a| a.uuid != uuid);
+        self.accounts.retain(|a| a.key() != uuid);
         if self.selected.as_deref() == Some(uuid) {
             self.selected = None;
         }
@@ -1329,15 +1602,16 @@ pub fn launch(
 ) -> Result<Launch, NoOwner> {
     let selected = accounts.selected.clone();
     let mut order = accounts.accounts.clone();
-    order.sort_by_key(|a| Some(&a.uuid) != selected.as_ref());
+    order.sort_by_key(|a| Some(&a.key()) != selected.as_ref());
     let mut pass = Launch::default();
     let mut owned = false;
     for account in order {
         if owned {
             break;
         }
-        let plays = Some(&account.uuid) == selected.as_ref();
-        let Some(secrets) = secrets_in(store, &account.uuid) else {
+        let plays = Some(&account.key()) == selected.as_ref();
+        let operation = session::lock(store);
+        let Some(secrets) = secrets_in(store, &account.key()) else {
             if plays {
                 pass.offline = Some(format!(
                     "{} is no longer signed in on this computer. Sign in again.",
@@ -1347,19 +1621,28 @@ pub fn launch(
             continue;
         };
         let before = serde_json::to_string(&secrets).ok();
-        let (said, secrets) = match check(ep, client_id, &account, secrets) {
+        let checked = match &operation {
+            Ok(_) => check(ep, client_id, &account, secrets),
+            Err(e) => Check::NoAnswer(e.clone(), secrets),
+        };
+        let (said, secrets) = match checked {
             Check::Owns(renewed, secrets) => {
                 accounts.update(renewed.clone());
                 if plays {
                     pass.session = Some((renewed.clone(), secrets.clone()));
                 }
-                pass.owner = Some((renewed, secrets.clone()));
+                if renewed.provider == Provider::Microsoft {
+                    pass.owner = Some((renewed, secrets.clone()));
+                }
                 (None, secrets)
             }
             Check::DoesNot(secrets) => (Some(DOES_NOT_OWN.to_string()), secrets),
             Check::NoAnswer(e, secrets) => (Some(e), secrets),
         };
-        owned = secrets.owns;
+        owned = (secrets.provider == Provider::Microsoft
+            && account.provider == Provider::Microsoft
+            && secrets.owns)
+            || (plays && account.provider == Provider::Ely && pass.session.is_some());
         if plays {
             pass.offline = said;
         }
@@ -1368,7 +1651,7 @@ pub fn launch(
             && let Some(text) = after
         {
             // The game still starts; the player hears why the next launch may ask again.
-            if let Err(e) = store.set(&account.uuid, &text) {
+            if let Err(e) = store.set(&account.key(), &text) {
                 let said = format!(
                     "{}'s renewed sign-in couldn't be saved in the keychain ({e}): you may \
                          have to sign in again next time.",
@@ -1381,7 +1664,11 @@ pub fn launch(
             }
         }
     }
-    if owned { Ok(pass) } else { Err(NoOwner) }
+    if owned {
+        Ok(pass)
+    } else {
+        Err(NoOwner)
+    }
 }
 
 /// The owner gate before the game starts. With the window's hidden developer option
@@ -1408,6 +1695,9 @@ pub fn write_session_file(
     account: &Account,
     secrets: &Secrets,
 ) -> Result<PathBuf, String> {
+    if account.provider != secrets.provider {
+        return Err("Account and session providers do not match.".into());
+    }
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     // Leftovers of games that never started (refused by the game after two minutes anyway).
     if let Ok(entries) = std::fs::read_dir(dir) {
@@ -1436,19 +1726,54 @@ pub fn write_session_file(
         "name": account.name,
         "uuid": account.uuid,
         "access_token": secrets.minecraft_token,
-        "user_type": "msa",
+        "user_type": if account.provider == Provider::Ely { "ely" } else { "msa" },
         "xuid": secrets.xuid,
     });
     std::io::Write::write_all(&mut file, body.to_string().as_bytes()).map_err(|e| e.to_string())?;
     Ok(path)
 }
 
+/// Called under the account-operation lock, after the final profile is known. Rejected or
+/// cancelled sign-ins must not save a credential, add another identity, or change selection.
+fn accept_sign_in(
+    accounts: &mut Accounts,
+    store: &dyn SecretStore,
+    expected: Option<&Account>,
+    account: Account,
+    secrets: &Secrets,
+    cancelled: &dyn Fn() -> bool,
+    progress: &dyn Fn(session::Phase),
+) -> Result<(), String> {
+    if cancelled() {
+        return Err("Sign-in cancelled.".into());
+    }
+    if let Some(expected) = expected {
+        if expected.key() != account.key() {
+            return Err(format!(
+                "Signed in as {} instead of {}. Use the Microsoft account for {} and try again.",
+                account.name, expected.name, expected.name
+            ));
+        }
+        if accounts.find(&expected.key()).is_none() {
+            return Err("That account was signed out while sign-in was in progress. Add it again to continue.".into());
+        }
+    }
+    let selected = accounts.selected.clone();
+    progress(session::Phase::Saving);
+    accounts.keep_sign_in(store, account, secrets)?;
+    if expected.is_some() {
+        accounts.selected = selected;
+    }
+    Ok(())
+}
+
 /// Where a background sign-in is (the window and the MCP server show it).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum SignInState {
     Starting,
     /// Waiting for the player at `verification_uri` with `user_code`.
     Code(DeviceCode),
+    Working(session::Phase),
     Done(Result<Account, String>),
 }
 
@@ -1459,10 +1784,43 @@ pub struct SignIn {
 }
 
 impl SignIn {
+    pub fn start_ely(username: String, password: String, otp: String) -> Self {
+        use std::sync::atomic::Ordering;
+        let state = std::sync::Arc::new(Mutex::new(SignInState::Starting));
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (thread_state, thread_cancel) = (state.clone(), cancel.clone());
+        std::thread::spawn(move || {
+            let result = (|| {
+                let (account, secrets) = ely::authenticate(&username, &password, &otp)?;
+                let store = store();
+                let _operation = session::lock(store)?;
+                let mut accounts = Accounts::load();
+                accept_sign_in(
+                    &mut accounts,
+                    store,
+                    None,
+                    account.clone(),
+                    &secrets,
+                    &|| thread_cancel.load(Ordering::Relaxed),
+                    &|_| {},
+                )?;
+                accounts.save()?;
+                Ok(account)
+            })();
+            *thread_state.lock().unwrap() = SignInState::Done(result);
+        });
+        Self { state, cancel }
+    }
     pub fn start() -> Self {
         Self::start_with_client_id(client_id())
     }
     pub fn start_with_client_id(configured_id: Option<String>) -> Self {
+        Self::start_expected(configured_id, None)
+    }
+    pub fn start_for(account: Account) -> Self {
+        Self::start_expected(client_id(), Some(account))
+    }
+    fn start_expected(configured_id: Option<String>, expected: Option<Account>) -> Self {
         use std::sync::atomic::Ordering;
         let state = std::sync::Arc::new(Mutex::new(SignInState::Starting));
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1477,9 +1835,22 @@ impl SignIn {
                 let ms = wait_for_sign_in(&ep, &client_id, &code, &|| {
                     thread_cancel.load(Ordering::Relaxed)
                 })?;
-                let (account, secrets) = finish_sign_in(&ep, ms)?;
+                let progress = |phase| set(SignInState::Working(phase));
+                let (account, secrets) = finish_sign_in_with_progress(&ep, ms, &progress)?;
+                progress(session::Phase::Queued);
+                let store = store();
+                let _operation = session::lock(store)?;
                 let mut accounts = Accounts::load();
-                accounts.add(store(), account.clone(), &secrets)?;
+                accept_sign_in(
+                    &mut accounts,
+                    store,
+                    expected.as_ref(),
+                    account.clone(),
+                    &secrets,
+                    &|| thread_cancel.load(Ordering::Relaxed),
+                    &progress,
+                )?;
+                progress(session::Phase::Saving);
                 accounts.save()?;
                 Ok(account)
             })();
@@ -1512,12 +1883,61 @@ pub fn session_for_game(
         offline_without_owner,
     )?;
     let _ = accounts.save();
+    Ok(session_file(game_home, pass))
+}
+
+/// [`session_for_game`] for one launch as `who` (`play --account`, a signed-in account): who
+/// plays changes for this launch only, so several games can play as several accounts at once
+/// (#4952). What the services renewed (tokens, names, skins) is still kept; which account
+/// `account select` picked is not touched.
+pub fn session_for_game_as(
+    game_home: &Path,
+    who: &Player,
+) -> Result<(Option<PathBuf>, Option<String>), String> {
+    let mut accounts = Accounts::load();
+    let pass = launch_as(
+        &Endpoints::live(),
+        client_id().as_deref(),
+        store(),
+        &mut accounts,
+        who,
+    );
+    let _ = accounts.save();
+    Ok(session_file(game_home, pass?))
+}
+
+/// The owner gate as `who`, on `accounts`, which keeps its choice of player.
+fn launch_as(
+    ep: &Endpoints,
+    client_id: Option<&str>,
+    store: &dyn SecretStore,
+    accounts: &mut Accounts,
+    who: &Player,
+) -> Result<Launch, String> {
+    let chosen = (
+        accounts.selected.clone(),
+        accounts.offline_selected.clone(),
+        accounts.offline.clone(),
+    );
+    let pass = accounts
+        .play_as(store, who.clone())
+        .and_then(|()| launch(ep, client_id, store, accounts).map_err(|e| e.to_string()));
+    (
+        accounts.selected,
+        accounts.offline_selected,
+        accounts.offline,
+    ) = chosen;
+    pass
+}
+
+/// The game's session file for a launch that passed the gate, or why it plays offline.
+fn session_file(game_home: &Path, pass: Launch) -> (Option<PathBuf>, Option<String>) {
     let Some((account, secrets)) = pass.session else {
-        return Ok((None, pass.offline));
+        return (None, pass.offline);
     };
     match write_session_file(&game_home.join("sessions"), &account, &secrets) {
-        Ok(file) => Ok((Some(file), None)),
-        Err(e) => Ok((None, Some(e))),
+        Ok(file) => (Some(file), None),
+        Err(e) => (None, Some(e)),
     }
 }
 
@@ -1548,9 +1968,13 @@ fn java_player_with(
     let pass = launch(ep, client_id, store, accounts).map_err(|e| e.to_string())?;
     let kept = || {
         let order = accounts.selected().into_iter().chain(&accounts.accounts);
-        order
-            .into_iter()
-            .find_map(|a| Some((a.clone(), secrets_in(store, &a.uuid).filter(|s| s.owns)?)))
+        order.into_iter().find_map(|a| {
+            Some((
+                a.clone(),
+                secrets_in(store, &a.key())
+                    .filter(|s| s.owns && s.provider == Provider::Microsoft)?,
+            ))
+        })
     };
     let (account, secrets) = pass
         .session

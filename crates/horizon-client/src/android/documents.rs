@@ -25,6 +25,7 @@ pub enum ShaderImportMode {
 }
 struct Request {
     kind: Kind,
+    appearance: Option<crate::skins::library::Kind>,
     home: PathBuf,
     cache: PathBuf,
     shader_mode: ShaderImportMode,
@@ -284,6 +285,7 @@ pub fn begin_with_shader_mode(
     };
     STATE.lock().unwrap_or_else(|e| e.into_inner()).request = Some(Request {
         kind,
+        appearance: None,
         home,
         cache,
         shader_mode,
@@ -298,6 +300,32 @@ pub fn begin_with_shader_mode(
         _ => kind.label(),
     };
     notice_for_kind(format!("Choose a {label} file"), false, Some(kind));
+    Ok(())
+}
+pub fn begin_appearance(
+    home: PathBuf,
+    kind: crate::skins::library::Kind,
+) -> std::result::Result<(), String> {
+    if busy() {
+        return Err("Finish or cancel the current import first".into());
+    }
+    CANCEL.store(false, Ordering::Relaxed);
+    crate::platform::hide();
+    let cache = crate::platform::cache_dir()
+        .ok_or("Could not access Android's import cache")?
+        .join("appearance-imports");
+    STATE.lock().unwrap_or_else(|e| e.into_inner()).request = Some(Request {
+        kind: Kind::Packs,
+        appearance: Some(kind),
+        home,
+        cache,
+        shader_mode: ShaderImportMode::Convert,
+    });
+    if !crate::native_ime::pick_document() {
+        picker_failed("Android document picker is unavailable");
+        return Err("Android document picker is unavailable".into());
+    }
+    notice("Choose a skin or cape PNG", false);
     Ok(())
 }
 pub fn picker_failed(error: &str) {
@@ -520,6 +548,26 @@ fn convert_classic_shader_pack(
 
 
 fn stage(request: Request, mut input: std::fs::File, name: String) -> Result<()> {
+    if let Some(kind) = request.appearance {
+        use std::io::Read;
+        if !name.to_ascii_lowercase().ends_with(".png") {
+            return Err("Choose a PNG skin or cape".into());
+        }
+        let mut bytes = Vec::new();
+        input
+            .take(crate::skins::MAX_IMPORT_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)?;
+        if CANCEL.load(Ordering::Relaxed) {
+            return Err("Import cancelled".into());
+        }
+        let mut library = crate::skins::library::Library::load(&request.home)?;
+        library.import(&request.home, &name, kind, &bytes)?;
+        notice(
+            "PNG added to the local gallery. Select it to apply locally.",
+            false,
+        );
+        return Ok(());
+    }
     if !content_files::plain_name(&name) || !request.kind.accepts(&name) {
         return Err("Selected file has the wrong extension for this folder".into());
     }

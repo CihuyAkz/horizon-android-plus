@@ -19,7 +19,7 @@ use horizon_client::{
 };
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex, mpsc},
+    sync::{Arc, Mutex, OnceLock, mpsc},
     time::{Duration, Instant},
 };
 use winit::{
@@ -33,6 +33,39 @@ struct PreparedAccount {
     key: String,
     file: PathBuf,
     appearance: crate::skins::cloud::Cache,
+}
+
+static SESSION_ARGUMENT: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+static WEB_STATUS: OnceLock<Mutex<String>> = OnceLock::new();
+
+pub(crate) fn session_argument() -> Option<PathBuf> {
+    SESSION_ARGUMENT
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
+}
+
+fn set_session_argument(path: Option<PathBuf>) {
+    *SESSION_ARGUMENT
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = path;
+}
+
+pub(crate) fn web_status() -> String {
+    WEB_STATUS
+        .get_or_init(|| Mutex::new(r#"{"connected":false,"status":"Waiting for Android launcher runtime"}"#.into()))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
+}
+
+fn set_web_status(status: String) {
+    *WEB_STATUS
+        .get_or_init(|| Mutex::new("Horizon Android is ready".into()))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = status;
 }
 pub(super) struct Launcher {
     home: PathBuf,
@@ -64,17 +97,20 @@ pub(super) struct Launcher {
     prepared_session: Option<PathBuf>,
     focus: Option<usize>,
     diagnostic_export: Option<mpsc::Receiver<std::result::Result<String, String>>>,
+    web_status_at: Option<Instant>,
 }
 
 impl Launcher {
     pub(super) fn refresh_wardrobe_account(&mut self) {
         if self.catalog.page == Page::Skins {
             self.catalog.scroll = 0.0;
-            self.wardrobe.open(
-                &self.catalog.config.name,
-                &self.catalog.config.microsoft_client_id,
-            );
         }
+        // Keep the profile-scoped wardrobe state current even when the HTML launcher
+        // is the only visible UI and the native Rust pages are never opened.
+        self.wardrobe.open(
+            &self.catalog.config.name,
+            &self.catalog.config.microsoft_client_id,
+        );
     }
 
     fn edit_text(&mut self, output: horizon_client::osk::Output) {
@@ -103,14 +139,6 @@ impl Launcher {
         let mut catalog = Catalog::new(&home);
         if crate::diagnostics::previous_unclean(&home) {
             catalog.status = crate::diagnostics::summary(&home);
-        }
-        horizon_client::android_runtime::graphics_startup::configure(home.clone());
-        if horizon_client::android_runtime::graphics_startup::recover(&home) {
-            catalog.config.renderer = crate::catalog::RendererMode::OpenGl;
-            if let Err(error) = catalog.config.save(&home) {
-                log::warn!("Could not save graphics recovery choice: {error}");
-            }
-            catalog.status = "Previous Vulkan startup was interrupted. Using OpenGL ES recovery; you can change Rendering mode in Settings.".into();
         }
         crate::configure_input_mode(catalog.config.input_host);
         crate::device_runtime::configure(catalog.config.device);
@@ -144,6 +172,7 @@ impl Launcher {
             prepared_session: None,
             focus: None,
             diagnostic_export: None,
+            web_status_at: None,
         }
     }
 
@@ -155,7 +184,6 @@ impl Launcher {
             game.exiting(events);
             drop(game);
         }
-        crate::game::android_reset_bundled_mods();
         crate::document_store::set_game_active(false);
         crate::performance::stop();
         crate::platform::hide();
@@ -234,8 +262,7 @@ impl Launcher {
         self.renderer = Some(game::loading_renderer(
             window.clone(),
             false,
-            Some(&gui.atlas),
-            Some(gui.panorama.as_ref()),
+            Some(&gui),
             None,
             if self.catalog.config.renderer == crate::catalog::RendererMode::OpenGl {
                 horizon_client::graphics::GraphicsApi::OpenGl
@@ -356,16 +383,6 @@ impl Launcher {
                 self.wardrobe
                     .prepare_game(&self.catalog.config.name, &game_home)?;
             }
-            let extra_arguments = if crate::PUBLIC_BUILD {
-                Vec::new()
-            } else {
-                match std::fs::read(self.home.join("android-launch.json")) {
-                    Ok(bytes) => serde_json::from_slice::<Vec<String>>(&bytes)?,
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-                    Err(e) => return Err(e.into()),
-                }
-            };
-
             self.audio = None;
             self.error = None;
             let _ = std::fs::remove_file(self.home.join("android-error.txt"));
@@ -386,24 +403,27 @@ impl Launcher {
             horizon_client::android_runtime::clear_gamepads();
             self.controller_edges = Default::default();
             self.controller_repeat = None;
-            let request = crate::game_launch::LaunchRequest {
-                resources: self
-                    .home
-                    .join(".local/horizon-client")
-                    .join(horizon_core::VANILLA_VERSION),
-                game_home,
-                session_file: self.prepared_session.take(),
-                offline_name: crate::catalog::truncate_player_name(&self.catalog.config.name),
-                server: self.catalog.config.server.clone(),
-                control_socket: (!crate::PUBLIC_BUILD).then(|| self.home.join("control.json")),
-                extra_arguments,
-                open_gl: self.catalog.config.renderer == crate::catalog::RendererMode::OpenGl,
-                gpu_batching: self.catalog.config.renderer == crate::catalog::RendererMode::Vulkan,
-            };
+            // The existing game loader parses android_arguments() synchronously, so the
+            // prepared session path only needs to be published for this constructor call.
+            horizon_client::skins::appearance::configure(&game_home)
+                .map_err(std::io::Error::other)?;
+            let session_file = self.prepared_session.take();
+            set_session_argument(session_file.clone());
+            horizon_client::android_runtime::configure_graphics(
+                self.catalog.config.renderer == crate::catalog::RendererMode::OpenGl,
+            );
+            horizon_client::android_runtime::configure_gpu(
+                self.catalog.config.renderer == crate::catalog::RendererMode::Vulkan,
+            );
             // The launcher and game can use different Android Activity orientations.
             crate::platform::set_orientation(self.catalog.config.game_orientation);
             crate::document_store::set_game_active(true);
-            let game = match crate::game_launch::start(request) {
+            let game = crate::game::android_game();
+            set_session_argument(None);
+            if let Some(file) = session_file {
+                let _ = std::fs::remove_file(file);
+            }
+            let game = match game {
                 Ok(game) => game,
                 Err(error) => {
                     crate::platform::set_orientation(self.catalog.config.launcher_orientation);
@@ -447,6 +467,319 @@ impl Launcher {
             });
         }
         Ok(())
+    }
+}
+
+impl Launcher {
+    fn web_setting(&mut self, payload: &str) -> std::result::Result<(), String> {
+        let value: serde_json::Value = serde_json::from_str(payload)
+            .map_err(|_| "Invalid settings request".to_owned())?;
+        let key = value.get("key").and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "Missing setting name".to_owned())?;
+        let setting = value.get("value").ok_or_else(|| "Missing setting value".to_owned())?;
+        match key {
+            "renderer" => {
+                self.catalog.config.renderer = match setting.as_str() {
+                    Some("vulkan") => crate::catalog::RendererMode::Vulkan,
+                    Some("open-gl") => crate::catalog::RendererMode::OpenGl,
+                    Some("vulkan-compatibility") => crate::catalog::RendererMode::VulkanCompatibility,
+                    _ => return Err("Unsupported rendering mode".into()),
+                };
+            }
+            "renderScalePercent" => {
+                let percent = setting.as_u64().filter(|v| (25..=100).contains(v))
+                    .ok_or_else(|| "Resolution scale must be between 25 and 100".to_owned())?;
+                self.catalog.config.render_scale = crate::display::RenderScale::new(percent as u32);
+                crate::display::set_scale(self.catalog.config.render_scale);
+            }
+            "displayHz" => {
+                let hz = setting.as_u64().and_then(|v| u16::try_from(v).ok())
+                    .filter(|v| crate::device_preferences::DISPLAY_RATES.contains(v))
+                    .ok_or_else(|| "Unsupported display refresh rate".to_owned())?;
+                self.catalog.config.device.display_hz = hz;
+            }
+            "performanceHints" => self.catalog.config.device.performance_hints = setting.as_bool()
+                .ok_or_else(|| "Invalid performance-hints value".to_owned())?,
+            "gpuProfile" => self.catalog.config.device.gpu_profile = setting.as_bool()
+                .ok_or_else(|| "Invalid GPU-profiling value".to_owned())?,
+            "recordPerformance" => self.catalog.config.record_performance = setting.as_bool()
+                .ok_or_else(|| "Invalid performance-recording value".to_owned())?,
+            "launcherOrientation" => {
+                self.catalog.config.launcher_orientation = serde_json::from_value(setting.clone())
+                    .map_err(|_| "Unsupported launcher orientation".to_owned())?;
+                crate::platform::set_orientation(self.catalog.config.launcher_orientation);
+            }
+            "gameOrientation" => {
+                self.catalog.config.game_orientation = serde_json::from_value(setting.clone())
+                    .map_err(|_| "Unsupported in-game orientation".to_owned())?;
+            }
+            "immersive" => self.catalog.config.screen.immersive = setting.as_bool()
+                .ok_or_else(|| "Invalid immersive-mode value".to_owned())?,
+            "avoidCutout" => self.catalog.config.screen.avoid_cutout = setting.as_bool()
+                .ok_or_else(|| "Invalid cutout preference".to_owned())?,
+            "aspect" => {
+                self.catalog.config.screen.aspect = serde_json::from_value(setting.clone())
+                    .map_err(|_| "Unsupported aspect ratio".to_owned())?;
+            }
+            _ => return Err("Unsupported Android setting".into()),
+        }
+        self.catalog.config.save(&self.home).map_err(|error| error.to_string())?;
+        crate::device_runtime::configure(self.catalog.config.device);
+        self.configure_screen();
+        Ok(())
+    }
+
+    fn web_account_command(&mut self, payload: &str) -> std::result::Result<(), String> {
+        let value: serde_json::Value = serde_json::from_str(payload)
+            .map_err(|_| "Invalid account request".to_owned())?;
+        match value.get("op").and_then(serde_json::Value::as_str) {
+            Some("select") => {
+                let key = value.get("key").and_then(serde_json::Value::as_str)
+                    .filter(|key| !key.is_empty() && key.len() <= 80)
+                    .ok_or_else(|| "Invalid account selection".to_owned())?;
+                let mut accounts = crate::account::Accounts::load();
+                if !accounts.accounts.iter().any(|account| account.key() == key) {
+                    return Err("That saved account is no longer available".into());
+                }
+                accounts.selected = Some(key.to_owned());
+                accounts.save()?;
+                self.session_ready = false;
+                self.prepared_session = None;
+                self.session_worker = None;
+                self.login.refresh_status();
+                self.wardrobe.open(&self.catalog.config.name, &self.catalog.config.microsoft_client_id);
+                Ok(())
+            }
+            Some("offline") => {
+                let mut accounts = crate::account::Accounts::load();
+                accounts.selected = None;
+                accounts.save()?;
+                self.session_ready = false;
+                self.prepared_session = None;
+                self.session_worker = None;
+                self.login.refresh_status();
+                self.wardrobe.open(&self.catalog.config.name, &self.catalog.config.microsoft_client_id);
+                Ok(())
+            }
+            _ => Err("Unsupported account operation".into()),
+        }
+    }
+
+    fn web_wardrobe_command(&mut self, payload: &str) -> std::result::Result<(), String> {
+        let value: serde_json::Value = serde_json::from_str(payload)
+            .map_err(|_| "Invalid wardrobe request".to_owned())?;
+        let operation = value.get("op").and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "Missing wardrobe operation".to_owned())?;
+        let client_id = self.catalog.config.microsoft_client_id.clone();
+        match operation {
+            "refresh" => self.wardrobe.open(&self.catalog.config.name, &client_id),
+            "kind" => self.wardrobe.capes = value.get("cape").and_then(serde_json::Value::as_bool).unwrap_or(false),
+            "import" => {
+                self.wardrobe.capes = value.get("cape").and_then(serde_json::Value::as_bool).unwrap_or(false);
+                self.wardrobe.import();
+            }
+            "select" => {
+                let id = value.get("id").and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| "Missing wardrobe image".to_owned())?;
+                self.wardrobe.select_id(id);
+            }
+            "use-cloud" => self.wardrobe.use_cloud(),
+            "model" => self.wardrobe.model(),
+            "hide-cape" => self.wardrobe.hide_cape(),
+            "upload" => self.wardrobe.cloud(&client_id, Some(wardrobe::CloudAction::Upload)),
+            "activate-cape" => {
+                let id = value.get("id").and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| "Missing cloud cape identifier".to_owned())?;
+                self.wardrobe.activate_cloud_cape(id, &client_id);
+            }
+            _ => return Err("Unsupported wardrobe operation".into()),
+        }
+        Ok(())
+    }
+
+    fn web_command(&mut self, events: &ActiveEventLoop, action: i32, payload: &str)
+        -> std::result::Result<(), String>
+    {
+        match action {
+            1 => self.action(events).map_err(|error| error.to_string()),
+            2 => {
+                self.session_ready = false;
+                self.prepared_session = None;
+                self.session_worker = None;
+                self.login.start(&self.catalog.config.microsoft_client_id);
+                Ok(())
+            }
+            3 => {
+                self.session_ready = false;
+                self.prepared_session = None;
+                self.session_worker = None;
+                self.login.sign_out();
+                self.refresh_wardrobe_account();
+                Ok(())
+            }
+            4 => {
+                let (kind_name, shader_mode) = if let Some(mode) = payload.strip_prefix("shaders:") {
+                    ("shaders", if mode == "import" { crate::documents::ShaderImportMode::ImportOnly } else { crate::documents::ShaderImportMode::Convert })
+                } else { (payload, crate::documents::ShaderImportMode::Convert) };
+                let kind = match kind_name {
+                    "mods" => horizon_client::content_files::Kind::Mods,
+                    "resourcepacks" => horizon_client::content_files::Kind::Packs,
+                    "shaders" => horizon_client::content_files::Kind::Shaders,
+                    _ => return Err("Unsupported import type".into()),
+                };
+                crate::documents::begin_with_shader_mode(kind, self.catalog.config.game_home(&self.home), shader_mode)
+            }
+            5 => {
+                let index = payload.parse::<usize>().map_err(|_| "Invalid content index".to_owned())?;
+                self.catalog.toggle_local(&self.home, index);
+                Ok(())
+            }
+            6 => {
+                let index = payload.parse::<usize>().map_err(|_| "Invalid content index".to_owned())?;
+                self.catalog.pending_delete = self.catalog.local.get(index).cloned();
+                if self.catalog.pending_delete.is_some() { self.catalog.remove_local(&self.home); }
+                Ok(())
+            }
+            7 => {
+                self.catalog.refresh(&self.home);
+                self.wardrobe.reload();
+                Ok(())
+            }
+            8 => {
+                let name = payload.trim();
+                if !crate::account::valid_offline_name(name) {
+                    return Err("Use 3–16 letters, numbers, or underscores for the offline name".into());
+                }
+                self.catalog.config.name = name.to_owned();
+                self.catalog.config.save(&self.home).map_err(|error| error.to_string())?;
+                self.wardrobe.open(&self.catalog.config.name, &self.catalog.config.microsoft_client_id);
+                Ok(())
+            }
+            9 => crate::documents::resolve_web_conflict(payload),
+            10 => self.web_setting(payload),
+            11 => {
+                let _ = crate::platform::open_documents("reports");
+                Ok(())
+            }
+            12 => self.web_account_command(payload),
+            13 => {
+                let value: serde_json::Value = serde_json::from_str(payload)
+                    .map_err(|_| "Invalid Ely.by sign-in request".to_owned())?;
+                let username = value.get("username").and_then(serde_json::Value::as_str).unwrap_or("").trim();
+                let password = value.get("password").and_then(serde_json::Value::as_str).unwrap_or("");
+                let otp = value.get("otp").and_then(serde_json::Value::as_str).unwrap_or("");
+                if username.is_empty() || username.len() > 256 || password.is_empty() || password.len() > 1024 || otp.len() > 64 {
+                    return Err("Enter a valid Ely.by username and password. OTP is optional.".into());
+                }
+                self.session_ready = false;
+                self.prepared_session = None;
+                self.session_worker = None;
+                self.login.sign_in_ely(username.to_owned(), password.to_owned(), otp.to_owned());
+                Ok(())
+            }
+            14 => self.web_wardrobe_command(payload),
+            _ => Err("Unsupported HTML launcher command".into()),
+        }
+    }
+
+    fn web_status_json(&self) -> String {
+        let accounts = crate::account::Accounts::load();
+        let selected = accounts.selected().cloned();
+        let profile = selected.as_ref().map(|account| account.name.clone());
+        let provider = selected.as_ref().map(|account| match account.provider {
+            crate::account::Provider::Microsoft => "Microsoft",
+            crate::account::Provider::Ely => "Ely.by",
+        });
+        let saved_accounts: Vec<_> = accounts.accounts.iter().map(|account| serde_json::json!({
+            "key": account.key(),
+            "name": account.name,
+            "provider": match account.provider {
+                crate::account::Provider::Microsoft => "Microsoft",
+                crate::account::Provider::Ely => "Ely.by",
+            },
+            "active": accounts.selected.as_deref() == Some(account.key().as_str())
+        })).collect();
+        let items: Vec<_> = self.catalog.local.iter().enumerate().map(|(index, item)| serde_json::json!({
+            "index": index,
+            "kind": match item.kind {
+                horizon_client::content_files::Kind::Mods => "mods",
+                horizon_client::content_files::Kind::Packs => "resourcepacks",
+                horizon_client::content_files::Kind::Shaders => "shaders",
+            },
+            "file": item.file,
+            "title": item.title,
+            "enabled": item.enabled
+        })).collect();
+        let install = *self.install.lock().unwrap_or_else(|error| error.into_inner());
+        let progress = crate::documents::progress_snapshot().map(|p| serde_json::json!({
+            "kind": if p.kind == horizon_client::content_files::Kind::Shaders { "shaders" } else { "content" },
+            "fileName": p.file_name,
+            "stage": p.stage,
+            "percent": p.percent,
+            "active": p.active,
+            "convert": p.convert
+        }));
+        let conflict = crate::documents::web_conflict().map(|(_, filename, message)| serde_json::json!({
+            "filename": filename,
+            "message": message,
+            "canKeepBoth": true
+        }));
+        let worlds: Vec<_> = std::fs::read_dir(self.catalog.config.game_home(&self.home).join("saves"))
+            .into_iter().flatten().flatten().filter_map(|entry| {
+                let path = entry.path();
+                if !entry.file_type().ok()?.is_dir() || !path.join("level.dat").is_file() { return None; }
+                let modified = entry.metadata().ok()?.modified().ok()?
+                    .duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+                Some(serde_json::json!({"name":entry.file_name().to_string_lossy(),"modified":modified}))
+            }).collect();
+        let status = if let Some(error) = &self.error { error.clone() }
+            else if !self.login.message().is_empty() { self.login.message().to_owned() }
+            else if !self.catalog.status.is_empty() { self.catalog.status.clone() }
+            else { self.login.status(&self.catalog.config.name) };
+        let settings = serde_json::json!({
+            "renderer": match self.catalog.config.renderer {
+                crate::catalog::RendererMode::Vulkan => "vulkan",
+                crate::catalog::RendererMode::OpenGl => "open-gl",
+                crate::catalog::RendererMode::VulkanCompatibility => "vulkan-compatibility"
+            },
+            "renderScalePercent": self.catalog.config.render_scale.percent(),
+            "displayHz": self.catalog.config.device.display_hz,
+            "performanceHints": self.catalog.config.device.performance_hints,
+            "gpuProfile": self.catalog.config.device.gpu_profile,
+            "recordPerformance": self.catalog.config.record_performance,
+            "launcherOrientation": serde_json::to_value(self.catalog.config.launcher_orientation).unwrap_or_default(),
+            "gameOrientation": serde_json::to_value(self.catalog.config.game_orientation).unwrap_or_default(),
+            "immersive": self.catalog.config.screen.immersive,
+            "avoidCutout": self.catalog.config.screen.avoid_cutout,
+            "aspect": serde_json::to_value(self.catalog.config.screen.aspect).unwrap_or_default()
+        });
+        serde_json::json!({
+            "connected": true,
+            "installed": horizon_client::official_install::ready(&self.home),
+            "installing": self.worker.is_some(),
+            "busy": crate::documents::busy() || self.catalog.busy(),
+            "install": {"stage":install.stage.label(),"done":install.done,"total":install.total},
+            "status": status,
+            "error": self.error,
+            "version": horizon_core::VANILLA_VERSION,
+            "account": {
+                "profile": profile,
+                "provider": provider,
+                "signedIn": self.login.signed_in,
+                "pending": self.login.pending(),
+                "offlineName": self.catalog.config.name,
+                "status": self.login.status(&self.catalog.config.name),
+                "message": self.login.message(),
+                "accounts": saved_accounts,
+                "auth": self.login.web_auth_status()
+            },
+            "wardrobe": self.wardrobe.web_snapshot(),
+            "items": items,
+            "worlds": worlds,
+            "settings": settings,
+            "contentProgress": progress,
+            "conflict": conflict
+        }).to_string()
     }
 }
 
@@ -592,6 +925,11 @@ impl ApplicationHandler for Launcher {
             self.restore_launcher(events);
             return;
         }
+        for (action, payload) in crate::take_web_commands() {
+            if let Err(error) = self.web_command(events, action, &payload) {
+                self.catalog.status = error;
+            }
+        }
         crate::diagnostics::heartbeat("launcher", || serde_json::json!({}));
         if let Some(result) = self
             .diagnostic_export
@@ -662,20 +1000,20 @@ impl ApplicationHandler for Launcher {
             self.session_worker = None;
             match result {
                 Ok(prepared) => {
-                    // Only the current selection may publish the game handoff. A canceled
-                    // worker downloads public cache images but cannot overwrite a new profile.
+                    // Only the account still selected after session refresh may be handed
+                    // to the game; a changed selection invalidates this result.
                     if crate::account::Accounts::load()
                         .selected()
-                        .is_none_or(|a| a.key() != prepared.key)
+                        .is_none_or(|account| account.key() != prepared.key)
                     {
                         let _ = std::fs::remove_file(prepared.file);
                         self.catalog.status =
                             "The selected account changed. Choose Play again.".into();
                     } else {
                         let root = self.home.join("wardrobe");
-                        let cloud = prepared.appearance.skin.as_deref().map(|p| {
+                        let cloud = prepared.appearance.skin.as_deref().map(|path| {
                             (
-                                p,
+                                path,
                                 prepared.appearance.slim,
                                 prepared.appearance.cape.as_deref(),
                             )
@@ -693,8 +1031,8 @@ impl ApplicationHandler for Launcher {
                             Ok(()) => {
                                 self.prepared_session = Some(prepared.file);
                                 self.session_ready = true;
-                                if let Err(e) = self.action(events) {
-                                    self.fail(e);
+                                if let Err(error) = self.action(events) {
+                                    self.fail(error);
                                 }
                             }
                             Err(error) => {
@@ -708,6 +1046,10 @@ impl ApplicationHandler for Launcher {
             }
         }
 
+        if self.web_status_at.is_none_or(|last| last.elapsed() >= Duration::from_millis(500)) {
+            set_web_status(self.web_status_json());
+            self.web_status_at = Some(Instant::now());
+        }
         if let Some(window) = &self.window {
             window.request_redraw();
         }

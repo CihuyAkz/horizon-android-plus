@@ -3,6 +3,8 @@
 //! `SkinManager` lookup (which texture a player shows, and when the default
 //! one) and `SkinTextureDownloader.processLegacySkin`.
 
+pub mod appearance;
+
 /// `Property.hasSignature` and the services key check, as authlib's
 /// `SignatureState`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

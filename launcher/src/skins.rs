@@ -8,6 +8,13 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+#[path = "skins/cloud.rs"]
+pub mod cloud;
+#[path = "skins/library.rs"]
+pub mod library;
+#[path = "skins/preview.rs"]
+pub mod preview;
+
 pub const SKIN_ENV: &str = "HORIZON_OFFLINE_SKIN";
 pub const MODEL_ENV: &str = "HORIZON_OFFLINE_SKIN_MODEL";
 pub const CAPE_ENV: &str = "HORIZON_OFFLINE_CAPE";

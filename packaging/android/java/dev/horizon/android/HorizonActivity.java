@@ -29,6 +29,7 @@ public final class HorizonActivity extends android.app.NativeActivity {
     private native void nativeDocumentResult(int request, int result, String uri);
     private native void nativeWebCommand(int action, String payload);
     private native String nativeWebStatus();
+    private native String nativeWebImage(String id);
 
     private WebView webView;
     private Dialog launcherDialog;
@@ -238,6 +239,12 @@ public final class HorizonActivity extends android.app.NativeActivity {
         @JavascriptInterface public String status() {
             String result = nativeWebStatus();
             return result == null ? "{}" : result;
+        }
+
+        @JavascriptInterface public String image(String id) {
+            if (id == null || id.length() > 64) return "";
+            String result = nativeWebImage(id);
+            return result == null ? "" : result;
         }
 
         @JavascriptInterface public String appVersion() {

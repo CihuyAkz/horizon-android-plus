@@ -103,7 +103,7 @@ pub extern "system" fn native_web_command(
     action: i32,
     payload: JString<'_>,
 ) {
-    if !(1..=11).contains(&action) { return; }
+    if !(1..=14).contains(&action) { return; }
     let value = if payload.is_null() {
         String::new()
     } else {
@@ -112,7 +112,9 @@ pub extern "system" fn native_web_command(
             Err(_) => { let _ = env.exception_clear(); return; }
         }
     };
-    if value.len() > 1024 { return; }
+    // Ely.by credentials are transiently passed over the trusted, bundled WebView bridge.
+    // Keep the request bounded and never log or persist its payload.
+    if value.len() > 8192 { return; }
     let queue = WEB_COMMANDS.get_or_init(|| Mutex::new(VecDeque::new()));
     let mut queue = queue.lock().unwrap_or_else(|error| error.into_inner());
     if queue.len() < 32 { queue.push_back((action, value)); }
@@ -125,6 +127,54 @@ pub extern "system" fn native_web_status(
 ) -> jni::sys::jstring {
     let value = crate::launcher::web_status();
     env.new_string(value).map(|value| value.into_raw()).unwrap_or(std::ptr::null_mut())
+}
+
+fn encode_web_image(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let a = chunk[0];
+        let b = *chunk.get(1).unwrap_or(&0);
+        let c = *chunk.get(2).unwrap_or(&0);
+        output.push(TABLE[(a >> 2) as usize] as char);
+        output.push(TABLE[(((a & 3) << 4) | (b >> 4)) as usize] as char);
+        output.push(if chunk.len() > 1 { TABLE[(((b & 15) << 2) | (c >> 6)) as usize] as char } else { '=' });
+        output.push(if chunk.len() > 2 { TABLE[(c & 63) as usize] as char } else { '=' });
+    }
+    output
+}
+
+#[unsafe(export_name = "Java_dev_horizon_android_HorizonActivity_nativeWebImage")]
+pub extern "system" fn native_web_image(
+    mut env: JNIEnv<'_>,
+    _activity: JObject<'_>,
+    id: JString<'_>,
+) -> jni::sys::jstring {
+    let encoded = if id.is_null() {
+        String::new()
+    } else {
+        match env.get_string(&id) {
+            Ok(value) => {
+                let id: String = value.into();
+                if id.len() != 64 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                    String::new()
+                } else {
+                    let root = crate::backend::data_dir().join("wardrobe");
+                    crate::skins::library::Library::image(&root, &id)
+                        .ok()
+                        .and_then(|path| std::fs::read(path).ok())
+                        .filter(|bytes| bytes.len() <= crate::skins::MAX_IMPORT_BYTES)
+                        .map(|bytes| encode_web_image(&bytes))
+                        .unwrap_or_default()
+                }
+            }
+            Err(_) => {
+                let _ = env.exception_clear();
+                String::new()
+            }
+        }
+    };
+    env.new_string(encoded).map(|value| value.into_raw()).unwrap_or(std::ptr::null_mut())
 }
 
 pub(crate) fn keyboard_mouse_input() -> bool {
@@ -203,6 +253,8 @@ pub(crate) fn android_arguments() -> horizon_client::Result<Vec<String>> {
         home.join(".local/horizon-client/26.3")
             .to_string_lossy()
             .into_owned(),
+        "--game-dir".into(),
+        config.game_home(&home).to_string_lossy().into_owned(),
     ];
     if !PUBLIC_BUILD {
         args.extend([
