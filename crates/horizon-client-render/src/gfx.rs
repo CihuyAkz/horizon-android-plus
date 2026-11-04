@@ -4041,9 +4041,20 @@ impl Renderer {
             flat: self.flat.as_ref().map(|f| &f.draw_layout),
             sprites: self.terrain_sprites,
             format: self.config.format.remove_srgb_suffix(),
+            sprite_tags: &[],
+            sprite_materials: &[],
+            entities: &self.weather.entity_layout,
+            weather_groups: [&self.weather.entity_layout, &self.weather.time_layout],
+            pbr: None,
         };
-        let (pack, labels) =
-            native_pack::NativePack::new(&self.device, &terrain, report, &constants)?;
+        let (pack, labels) = native_pack::NativePack::new(
+            &self.device,
+            &self.queue,
+            &terrain,
+            report,
+            &constants,
+            Default::default(),
+        )?;
         self.native = pack.draws().then_some(pack);
         if self.native.is_some() {
             self.pack_post = None;
@@ -4300,7 +4311,8 @@ impl Renderer {
         self.lightmap_uploaded = true;
     }
     fn animate(&mut self, encoder: &mut wgpu::CommandEncoder, tick: u64) {
-        self.animations.animate(encoder, &mut self.uploads, tick);
+        self.animations
+            .animate(encoder, &mut self.uploads, tick, None, None);
         if let Some(atlas) = &self.pack_atlas {
             atlas.copy(
                 encoder,
@@ -5759,7 +5771,7 @@ impl Renderer {
                 pass.set_bind_group(0, &self.group, &[]);
             }
             if !pack_draws_weather && !oit_on {
-                self.weather.draw(&mut pass, &self.entity_group);
+                self.weather.draw(&mut pass, &self.entity_group, None);
             }
             pass.set_bind_group(0, &self.group, &[]);
             if crumbling_quads > 0 && !oit_on {
@@ -5995,6 +6007,7 @@ impl Renderer {
                             );
                         },
                         &extras,
+                        None,
                     );
                     pass = world_pass_after_culling(&mut encoder, world_view, world_depth, true);
                     pass.set_bind_group(0, &self.group, &[]);
@@ -6199,9 +6212,10 @@ impl Renderer {
             post.run(
                 &self.device,
                 &mut encoder,
-                (color, depth),
+                (color, depth, &native.frame.surface_view),
                 &view_target,
                 size,
+                false,
                 native.timing.as_mut(),
             );
         } else if scaled.is_some() {
@@ -6254,6 +6268,7 @@ impl Renderer {
             &view_target,
             &self.entity_group,
             &self.indices,
+            None,
         );
         // The world icon grabs here: after the level and the hand, before
         // the effects and the HUD draw over them (`tryTakeScreenshotIfNeeded`
@@ -6282,6 +6297,7 @@ impl Renderer {
                     // The scaled world pass drew its own depth buffer.
                     scaled.is_none().then_some(&self.depth),
                     &frame.post_effects,
+                    None,
                 );
         }
         if !frame.screen.is_empty() {
@@ -6367,6 +6383,7 @@ impl Renderer {
                     &view_target,
                     [self.config.width, self.config.height],
                     radius,
+                    None,
                 );
         }
         self.hud.draw_range(

@@ -133,7 +133,7 @@ impl Zip {
             let Some(name) = archive.name_for_index(i) else {
                 continue;
             };
-            let name = name.map_err(invalid)?.replace('\\', "/");
+            let name = name.replace('\\', "/");
             match name.strip_suffix('/') {
                 Some(folder) => folders.insert(folder.to_owned(), i),
                 None => entries.insert(name, i),

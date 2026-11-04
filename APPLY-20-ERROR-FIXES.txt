@@ -1,0 +1,11 @@
+Horizon Android Plus — fixes for the 20 Rust compiler errors from workflow run 41788077372.
+
+This archive contains ONLY the seven replacement source files involved in those errors.
+It does not include the full repository or the Minecraft research-lock.json hash fix.
+
+Apply:
+1. Extract this archive at the repository root (the folder containing Cargo.toml).
+2. Allow the seven files to overwrite the matching paths.
+3. Commit the seven changed files and rerun the Android workflow.
+
+The patch has not been verified by a successful Android build.

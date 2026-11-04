@@ -911,6 +911,7 @@ impl Chat {
     }
 }
 
+#[derive(Clone, Debug)]
 struct SuggestionList {
     /// `rect`: x, y, width, height.
     rect: [i32; 4],

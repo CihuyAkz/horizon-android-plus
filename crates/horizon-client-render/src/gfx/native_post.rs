@@ -365,7 +365,6 @@ impl NativeFrame {
             // The light's box culls: on the ground it reaches further than `distance` along
             // the sun's azimuth while the sun is low.
             distance: None,
-            unculled: None,
         })
     }
 
@@ -1132,8 +1131,9 @@ pub fn frame_inputs(
         eye_light_smooth: [level(pack.eye_light[0]), level(pack.eye_light[1])],
         in_water: f32::from(u8::from(pack.eye_in as u32 == 1)),
         in_lava: f32::from(u8::from(pack.eye_in as u32 == 2)),
-        water_plane: frame.water_plane.unwrap_or(0.0),
-        has_reflection: u32::from(frame.water_plane.is_some()),
+        // This Android renderer does not expose the water surface plane.
+        water_plane: 0.0,
+        has_reflection: 0,
         reflection_resolution: reflection_size(size).map(|s| s as f32),
         mods: pack.mod_params,
         light_direction: match shadow {

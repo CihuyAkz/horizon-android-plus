@@ -152,7 +152,7 @@ pub fn paint(
         }
         icon.clear();
         horizon_client_core::potions::push_sprite(&mut icon, &panel.icon.id);
-        if let Some(r) = atlas.sprite_or_missing(&icon) {
+        if let Some(r) = atlas.sprites.get(&icon).copied() {
             let (x, y) = ((panel.x + 7) as f32, (panel.y + 7) as f32);
             batch.rect_uv(x, y, 18.0, 18.0, r, u32::MAX);
         }
