@@ -9,24 +9,28 @@ pub fn source_only_mod(project: &Project) -> bool {
     project.source == browser::SourceId::Horizon
         && project.loaders.iter().any(|loader| loader == "hnmod")
 }
-fn source_for(page: Page) -> browser::SourceId {
-    match page {
-        Page::Mods => browser::SourceId::Horizon,
-        Page::Packs | Page::Shaders => browser::SourceId::Modrinth,
-        _ => browser::SourceId::Horizon,
-    }
-}
-pub fn provider_supported(project: &Project) -> bool {
-    match project.kind {
-        Kind::Mod => project.source == browser::SourceId::Horizon,
-        Kind::ResourcePack | Kind::Shader => project.source == browser::SourceId::Modrinth,
-        _ => false,
-    }
-}
 
 /// Temporary dev registration published as Minecraft Nintendo Switch by PrismarineJS.
 /// Account tokens and client secrets are never bundled.
 pub const MICROSOFT_CLIENT_ID: &str = "00000000441cc96b";
+
+/// Minecraft player names are at most 16 UTF-16 units; a longer name fails
+/// the integrated-server handshake with only a generic disconnect. Truncate
+/// to that limit, counting UTF-16 units so characters outside the BMP count
+/// twice, as the protocol does.
+pub fn truncate_player_name(name: &str) -> String {
+    let mut units = 0;
+    let mut out = String::new();
+    for c in name.chars() {
+        let w = c.len_utf16();
+        if units + w > 16 {
+            break;
+        }
+        units += w;
+        out.push(c);
+    }
+    out
+}
 
 /// Real Vulkan rendering paths; these do not select a different driver or API.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,12 +62,15 @@ pub struct Config {
     pub microsoft_client_id: String,
     pub renderer: RendererMode,
     pub render_scale: crate::display::RenderScale,
-    pub orientation: Orientation,
+    pub launcher_orientation: Orientation,
+    pub game_orientation: Orientation,
     #[serde(flatten)]
     pub screen: crate::display::ScreenPreferences,
     pub input_host: InputHost,
     pub keypad_controls: bool,
     pub record_performance: bool,
+    pub worker_limit: u32,
+    pub cache_budget_mib: u32,
     #[serde(flatten)]
     pub device: crate::device_preferences::Settings,
     pub shader_source: crate::shader_catalog::Origin,
@@ -117,8 +124,23 @@ impl Config {
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or_default();
         let mut config: Self = serde_json::from_value(value.clone()).unwrap_or_default();
-        config.shader_source = crate::shader_catalog::Origin::Modrinth;
-        config.mod_source = crate::shader_catalog::Origin::Horizon;
+        // Migrate the former single orientation setting without losing the user's choice.
+        let legacy_orientation = value
+            .get("orientation")
+            .cloned()
+            .and_then(|orientation| serde_json::from_value::<Orientation>(orientation).ok());
+        config.launcher_orientation = value
+            .get("launcher_orientation")
+            .cloned()
+            .and_then(|orientation| serde_json::from_value::<Orientation>(orientation).ok())
+            .or(legacy_orientation)
+            .unwrap_or(Orientation::Portrait);
+        config.game_orientation = value
+            .get("game_orientation")
+            .cloned()
+            .and_then(|orientation| serde_json::from_value::<Orientation>(orientation).ok())
+            .or(legacy_orientation)
+            .unwrap_or(Orientation::Landscape);
         if cfg!(target_pointer_width = "32") && value.get("renderer").is_none() {
             config.renderer = RendererMode::OpenGl;
         }
@@ -133,6 +155,7 @@ impl Config {
             .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
             .unwrap_or_default();
         config.device.migrate_missing(&value, &legacy);
+        config.name = truncate_player_name(&config.name);
         config
     }
     pub fn save(&self, home: &Path) -> Result<(), String> {
@@ -165,15 +188,17 @@ pub enum Page {
     Shaders,
     Installed,
     Settings,
+    Skins,
 }
 impl Page {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Play,
         Self::Mods,
         Self::Packs,
         Self::Shaders,
         Self::Installed,
         Self::Settings,
+        Self::Skins,
     ];
     pub fn name(self) -> &'static str {
         match self {
@@ -183,6 +208,7 @@ impl Page {
             Self::Shaders => "Shaders",
             Self::Installed => "Installed",
             Self::Settings => "Settings",
+            Self::Skins => "Skins",
         }
     }
     pub fn is_catalog(self) -> bool {
@@ -194,6 +220,7 @@ enum Reply {
 }
 pub struct Catalog {
     pub local: Vec<LocalItem>,
+    pub bundled_enabled: std::collections::BTreeSet<String>,
     pub sections: [bool; 3],
     pub pending_delete: Option<LocalItem>,
     downloaded: Vec<(browser::SourceId, String)>,
@@ -225,6 +252,7 @@ impl Catalog {
         let config = Config::load(home);
         let mut result = Self {
             local: vec![],
+            bundled_enabled: Default::default(),
             sections: [false, false, false],
             pending_delete: None,
             downloaded: vec![],
@@ -270,6 +298,7 @@ impl Catalog {
             .map(|e| (e.source, e.project.clone()))
             .collect();
         let on = horizon_client::mod_list::ModList::load(&game);
+        self.bundled_enabled = on.enabled.difference(&on.disabled).cloned().collect();
         let settings = horizon_client::settings::Settings::load(&game.join("options.txt"));
         self.local.clear();
         for kind in horizon_client::content_files::Kind::ALL {
@@ -278,18 +307,11 @@ impl Catalog {
                 continue;
             }
             for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-                let Ok(file_type) = entry.file_type() else {
+                if !entry.file_type().is_ok_and(|t| t.is_file()) {
                     continue;
-                };
+                }
                 let name = entry.file_name().to_string_lossy().into_owned();
-                let path = entry.path();
-                let shader_folder = kind == horizon_client::content_files::Kind::Shaders
-                    && file_type.is_dir()
-                    && (path.join("shaders").is_dir()
-                        || horizon_shader_api::package::is_pack(&path));
-                if !horizon_client::content_files::plain_name(&name)
-                    || !(file_type.is_file() && kind.accepts(&name) || shader_folder)
-                {
+                if !horizon_client::content_files::plain_name(&name) || !kind.accepts(&name) {
                     continue;
                 }
                 let enabled = match kind {
@@ -316,20 +338,16 @@ impl Catalog {
     pub fn busy(&self) -> bool {
         self.worker.is_some()
     }
-    pub fn download_progress(&self, project: &Project) -> Option<f32> {
-        self.downloading
-            .as_ref()
-            .filter(|(source, id)| *source == project.source && *id == project.id)
-            .map(|_| {
-                self.progress
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clamp(0.0, 1.0)
-            })
-    }
     pub fn download_label(&self, project: &Project) -> Option<String> {
-        if let Some(progress) = self.download_progress(project) {
-            return Some(format!("{:.0}%", progress * 100.0));
+        if self
+            .downloading
+            .as_ref()
+            .is_some_and(|(source, id)| *source == project.source && *id == project.id)
+        {
+            return Some(format!(
+                "{:.0}%",
+                *self.progress.lock().unwrap_or_else(|e| e.into_inner()) * 100.0
+            ));
         }
         if self
             .downloaded
@@ -417,12 +435,27 @@ impl Catalog {
             self.request_search(home, false);
         }
     }
-    fn request_search(&mut self, _home: &Path, refresh: bool) {
+    fn request_search(&mut self, home: &Path, refresh: bool) {
         if !self.page.is_catalog() {
             return;
         }
+        if self.page == Page::Mods && self.query.trim().starts_with("https://") {
+            self.searches.cancel_interest();
+            if refresh {
+                self.import_native(home);
+            } else {
+                self.results.clear();
+                self.status = "Press Import .hmod to download this HTTPS link".into();
+            }
+            return;
+        }
         self.scroll = 0.0;
-        let source = source_for(self.page);
+        let source = match self.page {
+            Page::Packs => browser::SourceId::Modrinth,
+            Page::Shaders => self.config.shader_source.source(),
+            Page::Mods => self.config.mod_source.source(),
+            _ => browser::SourceId::Horizon,
+        };
         let key = (self.page, source, self.query.trim().to_owned(), self.offset);
         if let Some(items) = self.searches.request(key, refresh) {
             self.show_results(items);
@@ -433,12 +466,31 @@ impl Catalog {
         self.start_search();
     }
     fn show_results(&mut self, items: Vec<Project>) {
-        self.status = if self.page == Page::Mods {
-            format!("{} Horizon mod results", items.len())
-        } else if self.page == Page::Shaders {
-            format!("{} Modrinth shader results", items.len())
+        self.status = if self.page == Page::Shaders
+            && items.is_empty()
+            && self.config.shader_source == crate::shader_catalog::Origin::Horizon
+        {
+            "No Horizon shader packs match this search. Try another query or import a .hshader."
+                .into()
+        } else if self.page == Page::Mods
+            && self.config.mod_source == crate::shader_catalog::Origin::Modrinth
+        {
+            format!(
+                "{} Java mods - browsing only; this Rust client cannot run Java loaders",
+                items.len()
+            )
+        } else if self.page == Page::Mods {
+            let native = items.iter().filter(|p| source_only_mod(p)).count();
+            format!(
+                "{} .hmod / {} source-only .hnmod (not supported yet)",
+                items.len() - native,
+                native
+            )
         } else {
-            format!("{} Modrinth resource pack results", items.len())
+            format!(
+                "{} results - select Install to check compatibility",
+                items.len()
+            )
         };
         self.results = items;
     }
@@ -446,7 +498,7 @@ impl Catalog {
         if self.busy() || self.search_worker.is_some() {
             return;
         }
-        let Some((page, _source, text, offset)) = self.searches.take_next() else {
+        let Some((page, source, text, offset)) = self.searches.take_next() else {
             return;
         };
         let (tx, rx) = mpsc::channel();
@@ -460,29 +512,44 @@ impl Catalog {
             let mut query = Query::new(&text, kind);
             query.offset = offset;
             query.limit = 12;
-            let result = match page {
-                Page::Shaders => {
-                    query.everything = true;
-                    browser::modrinth::search_shader_packs(&query)
-                }
-                Page::Packs => {
-                    query.everything = true;
-                    browser::modrinth::Modrinth.search(&query)
-                }
-                Page::Mods => browser::horizon::Registry.search(&query),
-                _ => Ok(Vec::new()),
+            let result = if page == Page::Shaders && source == browser::SourceId::Modrinth {
+                query.everything = true;
+                browser::modrinth::search_shader_packs(&query)
+            } else if page == Page::Packs
+                || (page == Page::Mods && source == browser::SourceId::Modrinth)
+            {
+                query.everything = true;
+                browser::modrinth::Modrinth.search(&query)
+            } else {
+                browser::horizon::Registry.search(&query)
             };
             let _ = tx.send(result);
+        });
+    }
+    pub fn import_native(&mut self, home: &Path) {
+        let url = self.query.trim().to_owned();
+        let game = self.config.game_home(home);
+        self.job("Downloading sandboxed .hmod over HTTPS...",move||{
+            use std::io::Read;
+            let mut bytes=Vec::new();
+            ureq::AgentBuilder::new().https_only(true).timeout_connect(std::time::Duration::from_secs(20)).timeout_read(std::time::Duration::from_secs(90)).build().get(&url).call().map_err(|e|e.to_string())?.into_reader().take(32*1024*1024+1).read_to_end(&mut bytes).map_err(|e|e.to_string())?;
+            if bytes.len()>32*1024*1024 {return Err("Horizon mod exceeds 32 MiB".into());}
+            let dir=game.join("horizon-mods");std::fs::create_dir_all(&dir).map_err(|e|e.to_string())?;
+            let stage=dir.join("import.partial");std::fs::write(&stage,bytes).map_err(|e|e.to_string())?;
+            let result=(||{
+                let package=horizon_mods::Package::read(&stage)?;
+                let destination=dir.join(format!("{}.hmod",package.manifest.id));
+                if destination.exists(){std::fs::copy(&destination,destination.with_extension("hmod.previous")).map_err(|e|e.to_string())?;}
+                std::fs::rename(&stage,destination).map_err(|e|e.to_string())?;
+                Ok(Reply::Done(format!("Installed {}. Enable it in Installed after reviewing its capabilities in game Mods.",package.manifest.name), horizon_client::content_files::Kind::Mods))
+            })();
+            let _=std::fs::remove_file(stage);result
         });
     }
     pub fn install(&mut self, home: &Path, index: usize) {
         let Some(project) = self.results.get(index).cloned() else {
             return;
         };
-        if !provider_supported(&project) {
-            self.status = "This content source is not supported for this category".into();
-            return;
-        }
         if source_only_mod(&project) {
             self.status = "This .hnmod needs a separately compiled client. Android support is planned; sandboxed .hmod mods can be installed now.".into();
             return;
@@ -491,8 +558,16 @@ impl Catalog {
             return;
         }
         let game = self.config.game_home(home);
-        if project.kind == Kind::Mod && !cfg!(target_pointer_width = "64") {
-            self.status = "Horizon mods require a 64-bit APK".into();
+        if project.kind != Kind::ResourcePack
+            && !(project.kind == Kind::Shader
+                && matches!(
+                    project.source,
+                    browser::SourceId::Horizon | browser::SourceId::Modrinth
+                ))
+            && !(cfg!(target_pointer_width = "64")
+                && project.kind == Kind::Mod
+                && project.source == browser::SourceId::Horizon)
+        {
             return;
         }
         self.downloading = Some((project.source, project.id.clone()));
@@ -597,22 +672,12 @@ impl Catalog {
             }
             let target = dir.join(&item.file);
             let meta = std::fs::symlink_metadata(&target).map_err(|e| e.to_string())?;
-            if meta.file_type().is_symlink() {
-                return Err("Cannot remove a symbolic link".into());
+            if !meta.is_file() || meta.file_type().is_symlink() {
+                return Err(
+                    "Only an explicitly selected regular add-on file can be removed".into(),
+                );
             }
-            if meta.is_dir() {
-                let shader_folder = item.kind == horizon_client::content_files::Kind::Shaders
-                    && (target.join("shaders").is_dir()
-                        || horizon_shader_api::package::is_pack(&target));
-                if !shader_folder {
-                    return Err("Only a recognized shader folder can be removed".into());
-                }
-                std::fs::remove_dir_all(&target).map_err(|e| e.to_string())?;
-            } else if meta.is_file() {
-                std::fs::remove_file(&target).map_err(|e| e.to_string())?;
-            } else {
-                return Err("Only an explicitly selected add-on can be removed".into());
-            }
+            std::fs::remove_file(target).map_err(|e| e.to_string())?;
             let relative = format!("{}/{}", item.kind.folder(), item.file);
             let mut installed = Installed::load(&game);
             installed.entries.retain(|e| e.file != relative);
@@ -647,6 +712,7 @@ impl Catalog {
     }
     pub fn edit(&mut self, out: horizon_client::osk::Output, home: &Path) {
         use horizon_client::osk::Output;
+        let is_name = self.editing == Some("name");
         let field = match self.editing {
             Some("name") => &mut self.config.name,
             Some("server") => &mut self.config.server,
@@ -655,7 +721,14 @@ impl Catalog {
             _ => &mut self.query,
         };
         match out {
-            Output::Text(s) => field.push_str(&s),
+            Output::Text(s) => {
+                if is_name {
+                    let combined = format!("{}{}", field, s);
+                    *field = truncate_player_name(&combined);
+                } else {
+                    field.push_str(&s);
+                }
+            }
             Output::Backspace => {
                 field.pop();
             }
@@ -680,17 +753,5 @@ impl Catalog {
                 }
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod source_policy_tests {
-    use super::*;
-
-    #[test]
-    fn each_download_category_uses_only_its_supported_provider() {
-        assert_eq!(source_for(Page::Mods), browser::SourceId::Horizon);
-        assert_eq!(source_for(Page::Packs), browser::SourceId::Modrinth);
-        assert_eq!(source_for(Page::Shaders), browser::SourceId::Modrinth);
     }
 }

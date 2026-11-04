@@ -70,6 +70,16 @@ pub fn validate(
     name: &str,
     cancelled: impl Fn() -> bool,
 ) -> crate::Result<bool> {
+    validate_with_progress(path, kind, name, cancelled, |_, _| {})
+}
+
+pub fn validate_with_progress(
+    path: &Path,
+    kind: Kind,
+    name: &str,
+    cancelled: impl Fn() -> bool,
+    mut progress: impl FnMut(u64, u64),
+) -> crate::Result<bool> {
     if !plain_name(name) || !kind.accepts(name) {
         return Err(
             "Choose a ZIP pack, .hshader shader pack or sandboxed .hmod matching this folder"
@@ -95,7 +105,21 @@ pub fn validate(
     let mut manifest = false;
     let mut wasm = false;
     let mut buffer = [0u8; 65536];
-    for i in 0..zip.len() {
+    let entry_count = zip.len();
+    let mut total_bytes = 0u64;
+    for i in 0..entry_count {
+        if cancelled() {
+            return Err("Import cancelled".into());
+        }
+        total_bytes = total_bytes
+            .checked_add(zip.by_index(i)?.size())
+            .ok_or("Archive size overflow")?;
+        if total_bytes > MAX_EXPANDED || kind == Kind::Mods && total_bytes > 64 << 20 {
+            return Err("Expanded archive exceeds 512 MiB".into());
+        }
+    }
+    let mut processed_bytes = 0u64;
+    for i in 0..entry_count {
         if cancelled() {
             return Err("Import cancelled".into());
         }
@@ -143,6 +167,8 @@ pub fn validate(
                 break;
             }
             actual += n as u64;
+            processed_bytes = processed_bytes.saturating_add(n as u64);
+            progress(processed_bytes, total_bytes.max(1));
             if raw == "pack.mcmeta" {
                 metadata.extend_from_slice(&buffer[..n]);
             }
@@ -161,6 +187,11 @@ pub fn validate(
             return Err("Resource pack metadata has no pack object".into());
         }
     }
+    if total_bytes == 0 {
+        progress(1, 1);
+    } else {
+        progress(total_bytes, total_bytes);
+    }
     if !match kind {
         Kind::Packs => pack,
         Kind::Shaders => shader,
@@ -174,74 +205,21 @@ pub fn validate(
     }
     Ok(kind == Kind::Shaders && native_shader)
 }
-pub fn check_and_convert_classic_shader(destination: &Path) -> crate::Result<Option<bool>> {
-    const SOURCE: &[u8] = b"float cloudHeightM = isnan(cloudHeight) ? 192.0 : cloudHeight; // iris returns \"nan\" if there are no clouds";
-    const HORIZON: &[u8] = b"float cloudHeightM = (isnan(cloudHeight) || cloudHeight < 1.0) ? 192.0 : cloudHeight; // iris returns \"nan\" if there are no clouds; Horizon omits it as 0";
-    const MAX_COMMON: u64 = 8 << 20;
-
-    let path = destination.join("shaders/lib/common.glsl");
-    for directory in [destination.join("shaders"), destination.join("shaders/lib")] {
-        match fs::symlink_metadata(&directory) {
-            Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => {}
-            Ok(_) => return Err("Shader pack contains an unsafe common.glsl path".into()),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error.into()),
-        }
-    }
-    let metadata = match fs::symlink_metadata(&path) {
-        Ok(meta) => meta,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
-    };
-    if !metadata.is_file() || metadata.file_type().is_symlink() {
-        return Err("Shader common.glsl is not a regular file".into());
-    }
-    if metadata.len() > MAX_COMMON {
-        return Err("Shader common.glsl is unexpectedly large".into());
-    }
-
-    let bytes = fs::read(&path)?;
-    let source_count = bytes.windows(SOURCE.len()).filter(|part| *part == SOURCE).count();
-    let horizon_count = bytes.windows(HORIZON.len()).filter(|part| *part == HORIZON).count();
-    if horizon_count == 1 && source_count == 0 {
-        return Ok(Some(false));
-    }
-    if source_count != 1 || horizon_count != 0 {
-        return Ok(None);
-    }
-
-    let start = bytes
-        .windows(SOURCE.len())
-        .position(|part| part == SOURCE)
-        .ok_or("Verified shader conversion pattern disappeared")?;
-    let mut converted = Vec::with_capacity(bytes.len() + HORIZON.len() - SOURCE.len());
-    converted.extend_from_slice(&bytes[..start]);
-    converted.extend_from_slice(HORIZON);
-    converted.extend_from_slice(&bytes[start + SOURCE.len()..]);
-
-    let temporary = destination.join(".horizon-common.glsl.tmp");
-    let result = (|| -> crate::Result<()> {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)?;
-        file.write_all(&converted)?;
-        file.sync_all()?;
-        fs::rename(&temporary, &path)?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-    result?;
-    Ok(Some(true))
-}
-
 pub fn extract_shader_archive(
     path: &Path,
     destination: &Path,
     cancelled: impl Fn() -> bool,
 ) -> crate::Result<()> {
+    extract_shader_archive_with_progress(path, destination, cancelled, |_, _| {})
+}
+
+pub fn extract_shader_archive_with_progress(
+    path: &Path,
+    destination: &Path,
+    cancelled: impl Fn() -> bool,
+    mut progress: impl FnMut(u64, u64),
+) -> crate::Result<()> {
+    let mut created_destination = false;
     let result = (|| -> crate::Result<()> {
         let file = File::open(path)?;
         let mut zip = zip::ZipArchive::new(file)?;
@@ -249,7 +227,8 @@ pub fn extract_shader_archive(
             return Err("Shader archive or destination is invalid".into());
         }
         let mut prefix: Option<String> = None;
-        for i in 0..zip.len() {
+        let entry_count = zip.len();
+        for i in 0..entry_count {
             if cancelled() {
                 return Err("Import cancelled".into());
             }
@@ -269,9 +248,33 @@ pub fn extract_shader_archive(
         let prefix = prefix
             .as_deref()
             .ok_or("Shader ZIP has no shaders folder")?;
+        let mut total_bytes = 0u64;
+        for i in 0..entry_count {
+            if cancelled() {
+                return Err("Import cancelled".into());
+            }
+            let entry = zip.by_index(i)?;
+            let raw = entry.name();
+            let relative = if prefix.is_empty() {
+                raw
+            } else if let Some(relative) = raw.strip_prefix(prefix) {
+                relative
+            } else {
+                continue;
+            };
+            if !entry.is_dir() && !relative.trim_end_matches('/').is_empty() {
+                total_bytes = total_bytes
+                    .checked_add(entry.size())
+                    .ok_or("Shader archive size overflow")?;
+            }
+        }
+        let total_steps = (entry_count as u64).saturating_add(total_bytes.max(1));
+        progress(entry_count as u64, total_steps);
         fs::create_dir(destination)?;
+        created_destination = true;
         let mut total = 0u64;
-        for i in 0..zip.len() {
+        let mut processed_bytes = 0u64;
+        for i in 0..entry_count {
             if cancelled() {
                 return Err("Import cancelled".into());
             }
@@ -282,14 +285,17 @@ pub fn extract_shader_archive(
             } else if let Some(relative) = raw.strip_prefix(prefix) {
                 relative
             } else {
+                progress(entry_count as u64 + processed_bytes, total_steps);
                 continue;
             };
             let relative = relative.trim_end_matches('/');
             if relative.is_empty() {
+                progress(entry_count as u64 + processed_bytes, total_steps);
                 continue;
             }
             if relative.len() > 1024
                 || relative.contains(['\\', ':', '\0'])
+                || relative.chars().any(char::is_control)
                 || relative.starts_with('/')
                 || relative
                     .split('/')
@@ -308,6 +314,7 @@ pub fn extract_shader_archive(
             let target = destination.join(relative_path);
             if entry.is_dir() || relative.ends_with('/') {
                 fs::create_dir_all(&target)?;
+                progress(entry_count as u64 + processed_bytes, total_steps);
                 continue;
             }
             total = total
@@ -335,6 +342,8 @@ pub fn extract_shader_archive(
                     break;
                 }
                 actual += count as u64;
+                processed_bytes = processed_bytes.saturating_add(count as u64);
+                progress(entry_count as u64 + processed_bytes, total_steps);
                 if actual > expected || actual > MAX_EXPANDED {
                     return Err("Shader archive size mismatch".into());
                 }
@@ -344,9 +353,10 @@ pub fn extract_shader_archive(
                 return Err("Incomplete shader archive entry".into());
             }
         }
+        progress(total_steps, total_steps);
         Ok(())
     })();
-    if result.is_err() {
+    if result.is_err() && created_destination {
         let _ = fs::remove_dir_all(destination);
     }
     result
@@ -414,6 +424,11 @@ mod tests {
             validate(&path, Kind::Packs, "Test.zip", || false).unwrap(),
             false
         );
+        let mut validation_progress = Vec::new();
+        validate_with_progress(&path, Kind::Packs, "Test.zip", || false, |done, total| {
+            validation_progress.push((done, total));
+        }).unwrap();
+        assert!(validation_progress.last().is_some_and(|(done, total)| done == total));
         assert!(validate(&path, Kind::Packs, "Test.zip", || true).is_err());
         assert!(validate(&path, Kind::Packs, "../Test.zip", || false).is_err());
         for name in ["../outside", "/absolute", "C:/outside", "folder\\outside"] {
@@ -464,7 +479,11 @@ mod tests {
         std::fs::write(&archive_path, bytes).unwrap();
         assert!(!validate(&archive_path, Kind::Shaders, "Example.zip", || false).unwrap());
         let destination = dir.join("staged-pack");
-        extract_shader_archive(&archive_path, &destination, || false).unwrap();
+        let mut extraction_progress = Vec::new();
+        extract_shader_archive_with_progress(&archive_path, &destination, || false, |done, total| {
+            extraction_progress.push((done, total));
+        }).unwrap();
+        assert!(extraction_progress.last().is_some_and(|(done, total)| done == total));
         assert_eq!(
             std::fs::read(destination.join("shaders/final.fsh")).unwrap(),
             b"void main() {}"
@@ -550,55 +569,6 @@ mod tests {
         assert!(extract_shader_archive(&path, &target, || true).is_err());
         assert!(!target.exists());
         std::fs::remove_dir_all(&dir).unwrap();
-    }
-    #[test]
-    fn converts_only_the_verified_classic_shader_line() {
-        const SOURCE: &[u8] = b"float cloudHeightM = isnan(cloudHeight) ? 192.0 : cloudHeight; // iris returns \"nan\" if there are no clouds";
-        const HORIZON: &[u8] = b"float cloudHeightM = (isnan(cloudHeight) || cloudHeight < 1.0) ? 192.0 : cloudHeight; // iris returns \"nan\" if there are no clouds; Horizon omits it as 0";
-        let dir = std::env::temp_dir().join(format!(
-            "horizon-shader-convert-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let common = dir.join("shaders/lib/common.glsl");
-        let other = dir.join("shaders/final.fsh");
-        fs::create_dir_all(common.parent().unwrap()).unwrap();
-        fs::create_dir_all(other.parent().unwrap()).unwrap();
-        let original = [b"before\n".as_slice(), SOURCE, b"\nafter\n"].concat();
-        fs::write(&common, &original).unwrap();
-        fs::write(&other, b"unchanged shader source\n").unwrap();
-
-        assert_eq!(check_and_convert_classic_shader(&dir).unwrap(), Some(true));
-        let converted = fs::read(&common).unwrap();
-        assert!(converted.windows(HORIZON.len()).any(|part| part == HORIZON));
-        assert!(!converted.windows(SOURCE.len()).any(|part| part == SOURCE));
-        assert_eq!(&converted[..7], b"before\n");
-        assert!(converted.ends_with(b"\nafter\n"));
-        assert_eq!(fs::read(&other).unwrap(), b"unchanged shader source\n");
-        assert_eq!(check_and_convert_classic_shader(&dir).unwrap(), Some(false));
-        fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn unsupported_classic_shader_is_left_unchanged() {
-        let dir = std::env::temp_dir().join(format!(
-            "horizon-shader-unsupported-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let common = dir.join("shaders/lib/common.glsl");
-        fs::create_dir_all(common.parent().unwrap()).unwrap();
-        fs::write(&common, b"float cloudHeightM = cloudHeight;\n").unwrap();
-        let before = fs::read(&common).unwrap();
-        assert_eq!(check_and_convert_classic_shader(&dir).unwrap(), None);
-        assert_eq!(fs::read(&common).unwrap(), before);
-        fs::remove_dir_all(dir).unwrap();
     }
 
 }

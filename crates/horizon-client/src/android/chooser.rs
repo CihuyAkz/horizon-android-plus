@@ -9,10 +9,13 @@ use horizon_client::ui_theme::{Face, Ui, color};
 pub(super) enum Kind {
     Aspect,
     DisplayHz,
+    CacheBudget,
+    WorkerLimit,
     Renderer,
     RenderScale,
     Profile,
     Orientation,
+    GameOrientation,
     InputHost,
 }
 pub(super) struct Chooser {
@@ -57,6 +60,43 @@ impl Launcher {
                     )
                 })
                 .collect(),
+            ),
+            Kind::CacheBudget => (
+                "Reusable RAM cache",
+                "Decoded sounds (80%) and empty mesh buffers (20%). Recreated at the same quality. Smaller budgets can increase CPU work. Not total RAM/VRAM. Applies on next Play.",
+                [0, 16, 32, 64, 128, 256]
+                    .into_iter()
+                    .map(|mib| {
+                        (
+                            if mib == 0 {
+                                "Engine default (80 MiB)".into()
+                            } else {
+                                format!("{mib} MiB")
+                            },
+                            String::new(),
+                            Action::ChooseCacheBudget(mib),
+                            c.cache_budget_mib == mib,
+                        )
+                    })
+                    .collect(),
+            ),
+            Kind::WorkerLimit => (
+                "Chunk worker limit",
+                "Ceiling for generation and meshing workers, not all app threads. Lower values can reduce CPU contention but slow loading. Applies on next Play.",
+                (0..=64u32)
+                    .map(|limit| {
+                        (
+                            if limit == 0 {
+                                "No additional limit".into()
+                            } else {
+                                format!("{limit} worker(s)")
+                            },
+                            String::new(),
+                            Action::ChooseWorkerLimit(limit),
+                            c.worker_limit == limit,
+                        )
+                    })
+                    .collect(),
             ),
             Kind::DisplayHz => (
                 "Display refresh rate",
@@ -121,8 +161,8 @@ impl Launcher {
                     .collect(),
             ),
             Kind::Orientation => (
-                "Screen orientation",
-                "Applies to the launcher and game. Does not change touch bindings.",
+                "Launcher orientation",
+                "Applies to launcher pages immediately. Game orientation is configured separately.",
                 crate::catalog::Orientation::ALL
                     .into_iter()
                     .map(|mode| {
@@ -130,7 +170,22 @@ impl Launcher {
                             mode.label().into(),
                             String::new(),
                             Action::ChooseOrientation(mode),
-                            c.orientation == mode,
+                            c.launcher_orientation == mode,
+                        )
+                    })
+                    .collect(),
+            ),
+            Kind::GameOrientation => (
+                "In-game orientation",
+                "Applies when the next game session starts. Launcher orientation stays independent.",
+                crate::catalog::Orientation::ALL
+                    .into_iter()
+                    .map(|mode| {
+                        (
+                            mode.label().into(),
+                            String::new(),
+                            Action::ChooseGameOrientation(mode),
+                            c.game_orientation == mode,
                         )
                     })
                     .collect(),
@@ -263,11 +318,11 @@ impl Chooser {
     pub fn draw(&mut self, ui: &mut Ui, targets: &mut Vec<([f32; 4], Action)>) {
         let (w, h) = (ui.w, ui.h);
         targets.clear();
-        ui.rounded(0.0, 0.0, w, h, 0.0, color::bg());
-        ui.text(Face::Medium, 28.0, 32.0, 35.0, color::text(), self.title);
-        ui.text(Face::Regular, 15.0, 32.0, 85.0, color::muted(), self.help);
+        ui.rounded(0.0, 0.0, w, h, 0.0, color::BG);
+        ui.text(Face::Medium, 28.0, 32.0, 35.0, color::TEXT, self.title);
+        ui.text(Face::Regular, 15.0, 32.0, 85.0, color::MUTED, self.help);
         if let Some(device) = &self.device {
-            ui.text(Face::Regular, 13.0, 32.0, 111.0, color::muted(), device);
+            ui.text(Face::Regular, 13.0, 32.0, 111.0, color::MUTED, device);
         }
         let top = 137.0;
         let bottom = h - 100.0;
@@ -280,14 +335,14 @@ impl Chooser {
             if y < top || y + 76.0 > bottom {
                 continue;
             }
-            ui.rounded(34.0, y + 10.0, 22.0, 22.0, 11.0, color::text());
-            ui.rounded(36.0, y + 12.0, 18.0, 18.0, 9.0, color::bg());
+            ui.rounded(34.0, y + 10.0, 22.0, 22.0, 11.0, color::TEXT);
+            ui.rounded(36.0, y + 12.0, 18.0, 18.0, 9.0, color::BG);
             if *selected {
-                ui.rounded(40.0, y + 16.0, 10.0, 10.0, 5.0, color::text());
+                ui.rounded(40.0, y + 16.0, 10.0, 10.0, 5.0, color::TEXT);
             }
-            ui.text(Face::Medium, 19.0, 80.0, y + 8.0, color::text(), label);
-            ui.text(Face::Regular, 14.0, 80.0, y + 40.0, color::muted(), detail);
-            ui.rounded(32.0, y + 75.0, w - 64.0, 1.0, 0.0, color::border());
+            ui.text(Face::Medium, 19.0, 80.0, y + 8.0, color::TEXT, label);
+            ui.text(Face::Regular, 14.0, 80.0, y + 40.0, color::MUTED, detail);
+            ui.rounded(32.0, y + 75.0, w - 64.0, 1.0, 0.0, color::BORDER);
             targets.push(([32.0, y, w - 64.0, 76.0], *action));
         }
         button(
