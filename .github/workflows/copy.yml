@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to copy (e.g. v1.0.0)"
+        description: "Release tag to copy (e.g. Dev1)"
         required: true
         type: string
 
@@ -43,6 +43,7 @@ jobs:
 
           rsync -a --delete \
             --exclude='.github/' \
+            --exclude='.git/' \
             /tmp/release-source/ ./
 
       - name: Commit Changes
