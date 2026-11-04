@@ -97,9 +97,7 @@ impl Pack {
             let Some(name) = archive.name_for_index(i) else {
                 continue;
             };
-            let name = name
-                .map_err(|e| PackError::Zip(e.to_string()))?
-                .replace('\\', "/");
+            let name = name.replace('\\', "/");
             if let Some(inner) = name.strip_prefix(ROOT).and_then(|n| n.strip_prefix('/'))
                 && !inner.is_empty()
                 && !inner.ends_with('/')
